@@ -3,37 +3,45 @@ Usage
 
 .. code:: text
 
-  usage: aristotle.py [-h] -r RULES [-f METADATA_FILTER] [--summary]
-                      [-o OUTFILE] [-s [STATS [STATS ...]]] [-i] [-t] [-q] [-d]
+    usage: aristotle.py [-h] -r RULES [-f METADATA_FILTER] [--summary] [-o OUTFILE] [-s [STATS [STATS ...]]] [-i] [-t] [-n] [-m] [-q] [-d]
 
-  optional arguments:
-    -h, --help            show this help message and exit
-    -r RULES, --rules RULES, --ruleset RULES
-                          path to rules file or string containing the ruleset
-                          (default: None)
-    -f METADATA_FILTER, --filter METADATA_FILTER
-                          Boolean filter string or path to a file containing it
-                          (default: None)
-    --summary             output a summary of the filtered ruleset to stdout; if
-                          an output file is given, the full, filtered ruleset
-                          will still be written to it. (default: False)
-    -o OUTFILE, --output OUTFILE
-                          output file to write filtered ruleset to (default:
-                          <stdout>)
-    -s [STATS [STATS ...]], --stats [STATS [STATS ...]]
-                          display ruleset statistics about specified key(s). If
-                          no key(s) supplied, then summary statistics for all
-                          keys will be displayed. (default: None)
-    -i, --include-disabled
-                          include (effectively enable) disabled rules when
-                          applying the filter (default: False)
-    -t, --ignore-classtype, --ignore-classtype-keyword
-                          don't appropriate the 'classtype' keyword and value
-                          from the rule into the metadata structure for
-                          filtering and reporting
-    -q, --quiet, --suppress_warnings
-                          quiet; suppress warning logging (default: False)
-    -d, --debug           turn on debug logging (default: False)
+    Filter Suricata and Snort rulesets based on metadata keyword values.
+
+    optional arguments:
+      -h, --help            show this help message and exit
+      -r RULES, --rules RULES, --ruleset RULES
+                            path to rules file or string containing the ruleset
+      -f METADATA_FILTER, --filter METADATA_FILTER
+                            Boolean filter string or path to a file containing it
+      --summary             output a summary of the filtered ruleset to stdout; if an output file is given, the full, filtered ruleset will still be
+                            written to it.
+      -o OUTFILE, --output OUTFILE
+                            output file to write filtered ruleset to
+      -s [STATS [STATS ...]], --stats [STATS [STATS ...]]
+                            display ruleset statistics about specified key(s). If no key(s) supplied, then summary statistics for all keys will be
+                            displayed.
+      -i, --include-disabled
+                            include (effectively enable) disabled rules when applying the filter
+      -t, --ignore-classtype, --ignore-classtype-keyword
+                            don't appropriate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting
+      -n, --normalize, --better, --iso8601
+                            try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics. Dates are
+                            normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.
+      -m, --modify-metadata
+                            modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
+      -q, --quiet, --suppress_warnings
+                            quiet; suppress warning logging
+      -d, --debug           turn on debug logging
+
+    A filter string defines the desired outcome based on Boolean logic, and uses
+    the metadata key-value pairs as values in a (concrete) Boolean algebra.
+    The key-value pair specifications must be surrounded by double quotes.
+    Example:
+
+    python3 aristotle/aristotle.py -r examples/example.rules --summary -n
+    -f '(("priority high" AND "malware <ALL>") AND "created_at >= 2018-01-01")
+    AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 80181444"'
+
 
 Example Files
 -------------
@@ -90,6 +98,15 @@ rules in the ``example.rules`` file and output the results to the file ``newrule
 .. code-block:: bash
 
     python aristotle.py -r examples/example.rules -f '"malware <ALL>" AND ("attack_target http-server" or "attack_target tls-server")' -o newrules.rules
+
+Consume the rules defined in the ```examples/example.rules``, `Normalize`_ the metadata,
+apply the Boolean filter defined in the ``example1.filter`` file against the
+rules in the ``example.rules`` file, and output the results -- `with updated metadata` -- to
+the file ``newrules.rules``:
+
+.. code-block:: bash
+
+    python aristotle.py -r examples/example.rules -f examples/example1.filter -o newrules.rules --normalize --modify-metadata
 
 .. important:: Because Aristotle requires key-value pairs (values) in the filter string
     to be enclosed in double quotes, a filter string specified on the command line must
@@ -187,3 +204,43 @@ incorporated.  The ``classtype`` keyword can be used in a rule and defined in th
 the unique values will be considered.
 This default behavior can be changed with a command line switch or in
 the :ref:`Ruleset class constructor <target Ruleset class>`.
+
+Normalize
+---------
+
+The normalize command line option (also supported in
+the :ref:`Ruleset class constructor <target Ruleset class>` wil do the following
+to the internal data structure used to store metadata and filter against:
+
+  - ``cve`` value normalized to ``YYYY-<num>``. If multiple CVEs are represented in the
+    value and strung together with a ``_`` (e.g. ``cve_2021_27561_cve_2021_27562`` [`sic`])
+    then all identified CVEs will be included.
+  - date key values -- determined by any key names that end with ``_at`` or ``-at`` -- will
+    be attempted to be normalized to ``YYYY-MM-DD``.  A failure to parse or normalize
+    the value will result in a warning message and the value being unchanged.
+
+If the `update metadata`
+option is set then the normalized values, rather than the originals, will be
+included in the output.
+
+.. _target Update Metadata:
+
+Update Metadata
+---------------
+
+The command line and the :ref:`Ruleset class constructor <target Ruleset class>` offer
+the option to update the metadata keyword value on output.  If this option is not set,
+Aristotle does not modify rules, it just enable or disables them based on the given
+filter.  However, if the `update metadata` option is set, then the value of the ``metadata``
+keyword will be replaced with a string sourced form the internal data structure that
+Aristotle uses to track, parse, and filter metadata. Practically, the metadata will
+be updated accordingly:
+
+  - ``sid`` key and value added to metadata.
+  - ``classtype`` key and value added to metadata, if the ``classtype`` keyword is present in the rule and the option to ignore classtype is not set.
+  - if the `Normalize`_ option is set, any changes done by that will be included.
+  - ``cve`` value normalized to ``YYYY-<num>`` if normalize option set.
+  - date key values normalized to ``YYYY-MM-DD`` if normalize option set.
+
+Additionally, the order of the key-value pairs in the metadata will be sorted by
+key and then value.

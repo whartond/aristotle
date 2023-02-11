@@ -6,8 +6,10 @@ metadata keys. If a filter string is provided, it will also be applied
 against the ruleset and the filtered ruleset outputted.
 
 .. note::
-    Aristotle does *not* modify the contents of rules. It simply
-    includes or excludes rules based on the given Boolean filter string.
+    By default Aristotle does *not* modify the contents of rules, it
+    simply includes or excludes rules based on the given Boolean filter string.
+    However, if the :ref:`Update Metadata option <target Update Metadata>` is set, then
+    the ``metadata`` keyword value will be replaced as documented.
 
 Aristotle is compatible with Python 2.7 and Python 3.x.
 

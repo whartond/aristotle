@@ -46,36 +46,40 @@ Usage
 
 .. code:: text
 
-  usage: aristotle.py [-h] -r RULES [-f METADATA_FILTER] [--summary]
-                      [-o OUTFILE] [-s [STATS [STATS ...]]] [-i] [-t] [-q] [-d]
+    usage: aristotle.py [-h] -r RULES [-f METADATA_FILTER] [--summary] [-o OUTFILE] [-s [STATS [STATS ...]]] [-i] [-t] [-n] [-m] [-q] [-d]
 
-  optional arguments:
-    -h, --help            show this help message and exit
-    -r RULES, --rules RULES, --ruleset RULES
-                          path to rules file or string containing the ruleset
-                          (default: None)
-    -f METADATA_FILTER, --filter METADATA_FILTER
-                          Boolean filter string or path to a file containing it
-                          (default: None)
-    --summary             output a summary of the filtered ruleset to stdout; if
-                          an output file is given, the full, filtered ruleset
-                          will still be written to it. (default: False)
-    -o OUTFILE, --output OUTFILE
-                          output file to write filtered ruleset to (default:
-                          <stdout>)
-    -s [STATS [STATS ...]], --stats [STATS [STATS ...]]
-                          display ruleset statistics about specified key(s). If
-                          no key(s) supplied, then summary statistics for all
-                          keys will be displayed. (default: None)
-    -i, --include-disabled
-                          include (effectively enable) disabled rules when
-                          applying the filter (default: False)
-    -t, --ignore-classtype, --ignore-classtype-keyword
-                          don't appropriate the 'classtype' keyword and value from the rule into the metadata structure
-                          for filtering and reporting (default: False)
-    -q, --quiet, --suppress_warnings
-                          quiet; suppress warning logging (default: False)
-    -d, --debug           turn on debug logging (default: False)
+    Filter Suricata and Snort rulesets based on metadata keyword values.
+
+    optional arguments:
+      -h, --help            show this help message and exit
+      -r RULES, --rules RULES, --ruleset RULES
+                            path to rules file or string containing the ruleset
+      -f METADATA_FILTER, --filter METADATA_FILTER
+                            Boolean filter string or path to a file containing it
+      --summary             output a summary of the filtered ruleset to stdout; if an output file is given, the full, filtered ruleset will still be
+                            written to it.
+      -o OUTFILE, --output OUTFILE
+                            output file to write filtered ruleset to
+      -s [STATS [STATS ...]], --stats [STATS [STATS ...]]
+                            display ruleset statistics about specified key(s). If no key(s) supplied, then summary statistics for all keys will be
+                            displayed.
+      -i, --include-disabled
+                            include (effectively enable) disabled rules when applying the filter
+      -t, --ignore-classtype, --ignore-classtype-keyword
+                            don't appropriate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting
+      -n, --normalize, --better, --iso8601
+                            try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics. Dates are
+                            normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.
+      -m, --modify-metadata
+                            modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
+      -q, --quiet, --suppress_warnings
+                            quiet; suppress warning logging
+      -d, --debug           turn on debug logging
+
+    A filter string defines the desired outcome based on Boolean logic, and uses
+    the metadata key-value pairs as values in a (concrete) Boolean algebra.
+    The key-value pair specifications must be surrounded by double quotes.
+
 
 License
 =======

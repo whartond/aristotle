@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import sys
+import traceback
 
 class AristotleException(Exception):
     pass
@@ -49,9 +50,10 @@ if (sys.version_info < (3, 2)):
 
 disabled_rule_re = re.compile(r"^\x23(?:pass|drop|reject|alert|sdrop|log)\x20.*[\x28\x3B]\s*sid\s*\x3A\s*\d+\s*\x3B")
 sid_re = re.compile(r"[\x28\x3B]\s*sid\s*\x3A\s*(?P<SID>\d+)\s*\x3B")
-metadata_keyword_re = re.compile(r"[\x28\x3B]\s*metadata\s*\x3A\s*(?P<METADATA>[^\x3B]+)\x3B")
+metadata_keyword_re = re.compile(r"(?P<PRE>[\x28\x3B]\s*metadata\s*\x3A\s*)(?P<METADATA>[^\x3B]+)\x3B")
 classtype_keyword_re = re.compile(r"[\x28\x3B]\s*classtype\s*\x3A\s*(?P<CLASSTYPE>[^\x3B]+)\x3B")
 rule_msg_re = re.compile(r"[\s\x3B\x28]msg\s*\x3A\s*\x22(?P<MSG>[^\x22]+?)\x22\s*\x3B")
+cve_re = re.compile(r'(?:19|20)\d{2}\x2D(?:0\d{3}|[1-9]\d{3,})')
 
 if os.isatty(0) and sys.stdout.isatty():
     # ANSI colors; see https://en.wikipedia.org/wiki/ANSI_escape_code
@@ -122,9 +124,14 @@ class Ruleset():
     :param ignore_classtype_keyword: don't appropriate the 'classtype' keyword and value into the
         metadata structure for filtering and reporting
     :type ignore_classtype_keyword: bool, optional
+    :param normalize: try to convert and normalize date and CVE related metadata values into the schema defined by BETTER.
+        Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.
+    :type normalize: bool, optional
+    :param modify_metadata: modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
+    :type modify_metadata: bool, optional
     :raises: `AristotleException`
     """
-    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False):
+    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, normalize=False, modify_metadata=False):
         """Constructor."""
 
         # dict keys are sids
@@ -148,6 +155,8 @@ class Ruleset():
 
         self.include_disabled_rules = include_disabled_rules
         self.ignore_classtype_keyword = ignore_classtype_keyword
+        self.normalize = normalize
+        self.modify_metadata = modify_metadata
         if not metadata_filter:
             self.metadata_filter = None
             print_debug("No metadata_filter given to Ruleset() constructor")
@@ -189,6 +198,41 @@ class Ruleset():
                 self.metadata_filter = metadata_filter
         except Exception as e:
             print_error("Unable to process metadata_filter '{}':\n{}".format(metadata_filter, e), fatal=True)
+
+    def normalize_better(self, k, v):
+        """ Try to convert date and cve related metadata values to conform to the
+            BETTER schema for filtering and statistics. Currently applies to keys,
+            'cve' and those ending with '_at' or "-at".
+
+            :param k: key name of a metadata key-value pair
+            :type k: string, required
+            :param v: value of a metadata key-value pair
+            :type v: string, required
+
+            :returns: list of all key/value pairs to add to metadata structure
+            :rtype: list
+        """
+        retlist = []
+        if k.endswith("_at") or k.endswith("-at"):
+            # treat as possible date
+            try:
+                v = dateparse(v.replace('_', '-'))
+                v = v.strftime("%Y-%m-%d")
+            except Exception as e:
+                print_warning("Unable to parse '{}' key with value '{}' as date.".format(k, v))
+            retlist.append([k, v])
+        elif k == "cve":
+            # ET ruleset will in some cases string together multiple CVEs in one
+            # string, e.g. "cve_2021_27561_cve_2021_27562" so deal with that and
+            # the other underscore nonsense.
+            cves = cve_re.findall(v.replace('_', '-'))
+            if len(cves) == 0:
+                print_warning("Unable to parse '{}' value '{}'".format(k, v))
+            for cve in cves:
+                retlist.append([k, cve])
+        else:
+            retlist.append([k, v])
+        return retlist
 
 
     def parse_rules(self):
@@ -261,16 +305,25 @@ class Ruleset():
                         if k == "sid" and int(v) != sid:
                             # this is in violation of the BETTER schema, throw warning
                             print_warning("line {}: 'sid' metadata key value '{}' does not match rule sid '{}'. This may lead to unexpected results".format(lineno, v, sid))
-                        # populate metadata_dict
-                        if k not in self.metadata_dict[sid]['metadata'].keys():
-                            self.metadata_dict[sid]['metadata'][k] = []
-                        self.metadata_dict[sid]['metadata'][k].append(v)
-                        # populate keys_dict
-                        if k not in self.keys_dict.keys():
-                            self.keys_dict[k] = {}
-                        if v not in self.keys_dict[k].keys():
-                            self.keys_dict[k][v] = []
-                        self.keys_dict[k][v].append(sid)
+                        # normalize_better() returns a list b/c in rare cases it will produce more than one key/value pair.
+                        # Because of that, make everything a(nother) list, even though most of the time it will be
+                        # a one element list
+                        if self.normalize:
+                            kvs = self.normalize_better(k, v)
+                        else:
+                            kvs = [kvsplit]
+                        for current_kvp in kvs:
+                            k,v = current_kvp
+                            # populate metadata_dict
+                            if k not in self.metadata_dict[sid]['metadata'].keys():
+                                self.metadata_dict[sid]['metadata'][k] = []
+                            self.metadata_dict[sid]['metadata'][k].append(v)
+                            # populate keys_dict
+                            if k not in self.keys_dict.keys():
+                                self.keys_dict[k] = {}
+                            if v not in self.keys_dict[k].keys():
+                                self.keys_dict[k][v] = []
+                            self.keys_dict[k][v].append(sid)
                 # add sid as pseudo metadata key unless it already exists
                 if 'sid' not in self.metadata_dict[sid]['metadata'].keys():
                     # keys and values are strings; variable "sid" is int so must
@@ -279,6 +332,7 @@ class Ruleset():
                     self.keys_dict['sid'][str(sid)] = [sid]
 
         except Exception as e:
+            traceback.print_exc(e)
             print_error("Problem loading rules: {}".format(e), fatal=True)
 
     def cve_compare(self, left_val, right_val, cmp_operator):
@@ -603,19 +657,42 @@ class Ruleset():
             i += 1
         print("\n" + BLUE + "Showing {} of {} rules".format(i, len(sids)) + RESET + "\n")
 
-    def output_rules(self, sid_list, outfile=None):
+    def output_rules(self, sid_list, outfile=None, modify_metadata=None):
         """Output rules, given a list of SIDs.
 
         :param sid_list: list of SIDs of the rules to output
         :type sid_list: list, required
         :param outfile: filename to output to; if None, output to stdout; defaults to `None`
         :type outfile: string or None, optional
+        :param modify_metadata: modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
+        :type modify_metadata: bool, optional
         :returns: None
         :rtype: NoneType
         :raises: `AristotleException`
         """
         # TODO: handle order because of/based on flowbits? Ideally IDS engine should handle...
         #       see https://redmine.openinfosecfoundation.org/issues/1399
+
+        if modify_metadata is None:
+            modify_metadata = self.modify_metadata
+        if modify_metadata:
+            # Note: this updates/overwrites the self.metadata_dict[<sid>]['raw_rule'] value
+            # so if your code expects that to be unchanged after calling output_rules(),
+            # that won't be the case.
+            for s in sid_list:
+                metadata_string = ""
+                # Sort before building; this way the ruleset hash won't change on every run.
+                # Before Python 3.6, insertion order in dicts isn't necessarily preserved.
+                # Could use an OrderedDict but doing this instead.
+                for key in sorted(self.metadata_dict[s]['metadata'].keys()):
+                    for val in sorted(self.metadata_dict[s]['metadata'][key]):
+                        metadata_string += "{} {}, ".format(key, val)
+                if len(metadata_string) > 0:
+                    metadata_string = metadata_string[:-2] + ';'
+                    self.metadata_dict[s]['raw_rule'] = metadata_keyword_re.sub(r'\g<PRE>' + metadata_string, self.metadata_dict[s]['raw_rule'])
+                else:
+                    # this shouldn't happen b/c sid gets added
+                    print_warning("No metadata found for SID {}.".format(s))
         if outfile is None:
             for s in sid_list:
                 print("{}".format(self.metadata_dict[s]['raw_rule']))
@@ -628,6 +705,7 @@ class Ruleset():
                 print_error("Problem writing to file '{}':\n{}".format(outfile, e), fatal=True)
             print(GREEN + "Wrote {} rules to file, '{}'".format(len(sid_list), outfile) + RESET + "\n")
 
+
 def get_parser():
     """return parser for command line args"""
     try:
@@ -639,10 +717,9 @@ the metadata key-value pairs as values in a (concrete) Boolean algebra.
 The key-value pair specifications must be surrounded by double quotes.
 Example:
 
-python3 aristotle/aristotle.py -r examples/example.rules --summary -f '(("priority high"
-AND "malware <ALL>") AND "created_at >= 2018-01-01") AND NOT ("protocols smtp"
-OR "protocols pop" OR "protocols imap") OR "sid 80181444"'
-
+python3 aristotle/aristotle.py -r examples/example.rules --summary -n
+-f '(("priority high" AND "malware <ALL>") AND "created_at >= 2018-01-01")
+AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 80181444"'
 """
             )
         parser.add_argument("-r", "--rules", "--ruleset",
@@ -691,6 +768,18 @@ OR "protocols pop" OR "protocols imap") OR "sid 80181444"'
                             required=False,
                             default=False,
                             help="don't appropriate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting")
+        parser.add_argument("-n", "--normalize", "--better", "--iso8601",
+                            action="store_true",
+                            dest="normalize",
+                            required=False,
+                            default=False,
+                            help="try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics.  Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.")
+        parser.add_argument("-m", "--modify-metadata",
+                            action="store_true",
+                            dest="modify_metadata",
+                            required=False,
+                            default=False,
+                            help="modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.")
         parser.add_argument("-q", "--quiet", "--suppress_warnings",
                             action="store_true",
                             dest="suppress_warnings",
@@ -737,7 +826,9 @@ def main():
     if args.stats is not None:
         keys = []
         keyonly = False
-        rs = Ruleset(rules=args.rules, ignore_classtype_keyword=args.ignore_classtype_keyword)
+        rs = Ruleset(rules=args.rules,
+                     ignore_classtype_keyword=args.ignore_classtype_keyword,
+                     normalize=args.normalize, modify_metadata=args.modify_metadata)
         rs.print_header()
         if len(args.stats) > 0:
             # print stats for specified key(s)
@@ -756,7 +847,8 @@ def main():
     # create object
     rs = Ruleset(rules=args.rules, metadata_filter=args.metadata_filter,
                  include_disabled_rules=args.include_disabled_rules,
-                 ignore_classtype_keyword=args.ignore_classtype_keyword)
+                 ignore_classtype_keyword=args.ignore_classtype_keyword,
+                 normalize=args.normalize, modify_metadata=args.modify_metadata)
 
     filtered_sids = rs.filter_ruleset()
 
@@ -766,11 +858,11 @@ def main():
         if args.summary_ruleset:
             rs.print_ruleset_summary(filtered_sids)
         else:
-            rs.output_rules(sid_list=filtered_sids, outfile=None)
+            rs.output_rules(sid_list=filtered_sids, outfile=None, modify_metadata=args.modify_metadata)
     else:
         if args.summary_ruleset:
             rs.print_ruleset_summary(filtered_sids)
-        rs.output_rules(sid_list=filtered_sids, outfile=args.outfile)
+        rs.output_rules(sid_list=filtered_sids, outfile=args.outfile, modify_metadata=args.modify_metadata)
 
 if __name__== "__main__":
     main()
