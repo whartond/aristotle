@@ -22,6 +22,7 @@ import argparse
 import boolean
 import datetime
 from dateutil.parser import parse as dateparse
+import glob
 import hashlib
 import logging
 import os
@@ -121,9 +122,11 @@ class Ruleset():
     :type include_disabled_rules: bool, optional
     :param summary_max: the maximum number of rules to print when outputting summary/truncated filtered ruleset, defaults to `16`.
     :type summary_max: int, optional
-    :param ignore_classtype_keyword: don't appropriate the 'classtype' keyword and value into the
+    :param ignore_classtype_keyword: don't incorporate the 'classtype' keyword and value into the
         metadata structure for filtering and reporting
     :type ignore_classtype_keyword: bool, optional
+    :param ignore_filename: don't incorporate the filename of the rules file into the metadata structure for filtering and reporting
+    :type ignore_filename: bool, optional
     :param normalize: try to convert and normalize date and CVE related metadata values into the schema defined by BETTER.
         Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.
     :type normalize: bool, optional
@@ -131,7 +134,7 @@ class Ruleset():
     :type modify_metadata: bool, optional
     :raises: `AristotleException`
     """
-    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, normalize=False, modify_metadata=False):
+    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, modify_metadata=False):
         """Constructor."""
 
         # dict keys are sids
@@ -141,20 +144,9 @@ class Ruleset():
         # dict keys are hash of key-value pairs from passed in filter string/file
         self.metadata_map = {}
 
-        try:
-            if os.path.isfile(rules):
-                with open(rules, 'r') as fh:
-                    self.rules = fh.read()
-            else:
-                if len(rules) < 256 and "metadata" not in rules:
-                    # probably a mis-typed filename
-                    print_error("'{}' is not a valid file and does not appear to be a string containing valid rule(s)".format(rules), fatal=True)
-                self.rules = rules
-        except Exception as e:
-            print_error("Unable to process rules '{}':\n{}".format(rules, e), fatal=True)
-
         self.include_disabled_rules = include_disabled_rules
         self.ignore_classtype_keyword = ignore_classtype_keyword
+        self.ignore_filename = ignore_filename
         self.normalize = normalize
         self.modify_metadata = modify_metadata
         if not metadata_filter:
@@ -167,7 +159,29 @@ class Ruleset():
             self.summary_max = int(summary_max)
         except Exception as e:
             print_error("Unable to process 'summary_max' value '{}' passed to Ruleset constructor:\n{}".format(summary_max, e))
-        self.parse_rules()
+
+        try:
+            if os.path.isfile(rules):
+                with open(rules, 'r') as fh:
+                    self.parse_rules(rules=fh.read(), filename=os.path.basename(rules))
+            elif os.path.isdir(rules):
+                # process all files ending with ".rules"; sort (alphabetically) and process in order
+                rules_files = sorted(glob.glob(os.path.join(rules, "*.rules")))
+                if len(rules_files) == 0:
+                    print_error("No '.rules' files found in directory '{}'.".format(rules), fatal=True)
+                for file in rules_files:
+                    if os.path.isfile(file):
+                        with open(file, 'r') as fh:
+                            self.parse_rules(rules=fh.read(), filename=os.path.basename(file))
+                    else:
+                        print_debug("File '{}' not a file! Skipping.".format(file))
+            else:
+                if len(rules) < 256 and "metadata" not in rules:
+                    # probably a mis-typed filename
+                    print_error("'{}' is not a valid file or directory, and does not appear to be a string containing valid rule(s)".format(rules), fatal=True)
+                self.parse_rules(rules)
+        except Exception as e:
+            print_error("Unable to process rules '{}':\n{}".format(rules, e), fatal=True)
 
     def set_metadata_filter(self, metadata_filter):
         """Sets the metadata filter to use.
@@ -235,10 +249,16 @@ class Ruleset():
         return retlist
 
 
-    def parse_rules(self):
-        """Parses the ruleset and builds necessary data structures."""
+    def parse_rules(self, rules, filename=None):
+        """Parses the given rules and builds/updates necessary data structures.
+
+        :param rules: rules (one per line) to parse and build/update the necessary data structures
+        :type rules: string, required
+        :param filename: if the passed in rules came from a file, the filename of that file
+        :type filename: string, optional
+        """
         try:
-            for lineno, line in enumerate(self.rules.splitlines()):
+            for lineno, line in enumerate(rules.splitlines()):
              # ignore comments and blank lines
                 is_disabled_rule = False
                 if len(line.strip()) == 0:
@@ -277,6 +297,10 @@ class Ruleset():
                     print_debug("metadata_str for sid {}:\n{}".format(sid, metadata_str))
 
                 # build dict
+                if sid in self.metadata_dict.keys():
+                    print_warning("Duplicate sid '{}' found{} Only the latest enabled one will be included.".format(sid, "!" if not filename else " in file '{}'!".format(filename)))
+                    if is_disabled_rule:
+                        continue
                 self.metadata_dict[sid] = {'metadata': {},
                                       'disabled': False,
                                       'default-disabled': False,
@@ -286,44 +310,53 @@ class Ruleset():
                     self.metadata_dict[sid]['disabled'] = True
                     self.metadata_dict[sid]['default-disabled'] = True
 
-                if classtype and not self.ignore_classtype_keyword:
-                    # add classtype from keyword as pseudo metadata key
-                    metadata_str += "{}classtype {}".format(
-                        ", " if len(metadata_str) > 0 else "",
-                        classtype)
+                metadata_pairs = []
 
                 if len(metadata_str) > 0:
-                    for kvpair in metadata_str.split(','):
-                        # key-value pairs are case insensitive; make everything lower case
-                        # also remove extra spaces before, after, and between key and value
-                        kvsplit = [e.strip() for e in kvpair.lower().strip().split(' ', 1)]
-                        if len(kvsplit) < 2:
-                            # just a single word in metadata. warn and skip
-                            print_warning("Single word metadata value found, ignoring '{}' in sid {}".format(kvpair, sid))
-                            continue
-                        k, v = kvsplit
-                        if k == "sid" and int(v) != sid:
-                            # this is in violation of the BETTER schema, throw warning
-                            print_warning("line {}: 'sid' metadata key value '{}' does not match rule sid '{}'. This may lead to unexpected results".format(lineno, v, sid))
-                        # normalize_better() returns a list b/c in rare cases it will produce more than one key/value pair.
-                        # Because of that, make everything a(nother) list, even though most of the time it will be
-                        # a one element list
-                        if self.normalize:
-                            kvs = self.normalize_better(k, v)
-                        else:
-                            kvs = [kvsplit]
-                        for current_kvp in kvs:
-                            k,v = current_kvp
-                            # populate metadata_dict
-                            if k not in self.metadata_dict[sid]['metadata'].keys():
-                                self.metadata_dict[sid]['metadata'][k] = []
-                            self.metadata_dict[sid]['metadata'][k].append(v)
-                            # populate keys_dict
-                            if k not in self.keys_dict.keys():
-                                self.keys_dict[k] = {}
-                            if v not in self.keys_dict[k].keys():
-                                self.keys_dict[k][v] = []
-                            self.keys_dict[k][v].append(sid)
+                    metadata_pairs.extend(metadata_str.split(','))
+
+                if classtype and not self.ignore_classtype_keyword:
+                    # add classtype from keyword as pseudo metadata key
+                    metadata_pairs.append("classtype {}".format(classtype))
+
+                if filename and not self.ignore_filename:
+                    metadata_pairs.append("filename {}".format(filename))
+
+                for kvpair in metadata_pairs:
+                    # key-value pairs are case insensitive; make everything lower case
+                    # also remove extra spaces before, after, and between key and value
+                    kvsplit = [e.strip() for e in kvpair.lower().strip().split(' ', 1)]
+                    if len(kvsplit) < 2:
+                        # just a single word in metadata. warn and skip
+                        print_warning("Single word metadata value found, ignoring '{}' in sid {}".format(kvpair, sid))
+                        continue
+                    k, v = kvsplit
+                    if k == "sid" and int(v) != sid:
+                        # this is in violation of the BETTER schema, throw warning
+                        print_warning("line {}: 'sid' metadata key value '{}' does not match rule sid '{}'. This may lead to unexpected results".format(lineno, v, sid))
+                    # normalize_better() returns a list b/c in rare cases it will produce more than one key/value pair.
+                    # Because of that, make everything a(nother) list, even though most of the time it will be
+                    # a one element list
+                    if self.normalize:
+                        kvs = self.normalize_better(k, v)
+                    else:
+                        kvs = [kvsplit]
+                    for current_kvp in kvs:
+                        k,v = current_kvp
+                        # populate metadata_dict
+                        if k not in self.metadata_dict[sid]['metadata'].keys():
+                            self.metadata_dict[sid]['metadata'][k] = []
+                        self.metadata_dict[sid]['metadata'][k].append(v)
+                        # populate keys_dict
+                        if k not in self.keys_dict.keys():
+                            self.keys_dict[k] = {}
+                        if v not in self.keys_dict[k].keys():
+                            self.keys_dict[k][v] = []
+                        self.keys_dict[k][v].append(sid)
+                    for k in self.metadata_dict[sid]['metadata'].keys():
+                        # remove duplicate values for the same key
+                        self.metadata_dict[sid]['metadata'][k] = list(set(self.metadata_dict[sid]['metadata'][k]))
+
                 # add sid as pseudo metadata key unless it already exists
                 if 'sid' not in self.metadata_dict[sid]['metadata'].keys():
                     # keys and values are strings; variable "sid" is int so must
@@ -762,18 +795,24 @@ AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 801814
                             required=False,
                             default=False,
                             help="include (effectively enable) disabled rules when applying the filter")
-        parser.add_argument("-t", "--ignore-classtype", "--ignore-classtype-keyword",
-                            action="store_true",
-                            dest="ignore_classtype_keyword",
-                            required=False,
-                            default=False,
-                            help="don't appropriate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting")
         parser.add_argument("-n", "--normalize", "--better", "--iso8601",
                             action="store_true",
                             dest="normalize",
                             required=False,
                             default=False,
                             help="try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics.  Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.")
+        parser.add_argument("-t", "--ignore-classtype", "--ignore-classtype-keyword",
+                            action="store_true",
+                            dest="ignore_classtype_keyword",
+                            required=False,
+                            default=False,
+                            help="don't ignore_filenameincorporate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting.")
+        parser.add_argument("-g", "--ignore-filename",
+                            action="store_true",
+                            dest="ignore_filename",
+                            required=False,
+                            default=False,
+                            help="don't incorporate the filename of the rules file into the metadata structure for filtering and reporting.")
         parser.add_argument("-m", "--modify-metadata",
                             action="store_true",
                             dest="modify_metadata",
@@ -828,6 +867,7 @@ def main():
         keyonly = False
         rs = Ruleset(rules=args.rules,
                      ignore_classtype_keyword=args.ignore_classtype_keyword,
+                     ignore_filename=args.ignore_filename,
                      normalize=args.normalize, modify_metadata=args.modify_metadata)
         rs.print_header()
         if len(args.stats) > 0:
@@ -848,6 +888,7 @@ def main():
     rs = Ruleset(rules=args.rules, metadata_filter=args.metadata_filter,
                  include_disabled_rules=args.include_disabled_rules,
                  ignore_classtype_keyword=args.ignore_classtype_keyword,
+                 ignore_filename=args.ignore_filename,
                  normalize=args.normalize, modify_metadata=args.modify_metadata)
 
     filtered_sids = rs.filter_ruleset()
