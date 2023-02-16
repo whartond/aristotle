@@ -1,3 +1,14 @@
+# DELETEME
+# TODO:
+#
+# Add "enhanced" option to add metadata:
+#   - flow (direction)
+#   - protocols
+#   - attack_target?
+#   - custom "category"
+#   - 
+#
+
 #!/usr/bin/env python
 """Aristotle
 
@@ -5,6 +16,7 @@ Command line tool and library for filtering Suricata
 and Snort rulesets based on metadata keyword values.
 """
 # Copyright 2019 Secureworks
+# Copyright 2023 David Wharton
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -49,10 +61,13 @@ aristotle_logger = logging.getLogger("aristotle")
 if (sys.version_info < (3, 2)):
     aristotle_logger.addHandler(logging.NullHandler())
 
-disabled_rule_re = re.compile(r"^\x23(?:pass|drop|reject|alert|sdrop|log)\x20.*[\x28\x3B]\s*sid\s*\x3A\s*\d+\s*\x3B")
+rule_re = re.compile(r"^(?P<HEADER>(?P<ACTION>pass|drop|reject|alert|sdrop|log|rejectsrc|rejectdst|rejectboth)\s+(?P<PROTO>[^\s]+)\s+(?P<SRCIP>[^\s]+)\s+(?P<SRCPORT>[^\s]+)\s+(?P<DIRECTION>[\x2D\x3C]\x3E)\s+(?P<DSTIP>[^\s]+)\s+(?P<DSTPORT>[^\s]+))\s+\x28(?P<BODY>[^\x29]+)")
+disabled_rule_re = re.compile(r"^\x23(?:pass|drop|reject|alert|sdrop|log|rejectsrc|rejectdst|rejectboth)\x20.*[\x28\x3B]\s*sid\s*\x3A\s*\d+\s*\x3B")
 sid_re = re.compile(r"[\x28\x3B]\s*sid\s*\x3A\s*(?P<SID>\d+)\s*\x3B")
 metadata_keyword_re = re.compile(r"(?P<PRE>[\x28\x3B]\s*metadata\s*\x3A\s*)(?P<METADATA>[^\x3B]+)\x3B")
 classtype_keyword_re = re.compile(r"[\x28\x3B]\s*classtype\s*\x3A\s*(?P<CLASSTYPE>[^\x3B]+)\x3B")
+flow_re = re.compile(r"[\s\x3B\x28]flow\s*\x3A\s*(?P<FLOW>[^\x3B]+?)\x3B")
+app_layer_protocol_re = re.compile(r"[\s\x3B\x28]app-layer-protocol\s*\x3A\s*(?P<ALPROTO>[^\x3B]+?)\x3B")
 rule_msg_re = re.compile(r"[\s\x3B\x28]msg\s*\x3A\s*\x22(?P<MSG>[^\x22]+?)\x22\s*\x3B")
 cve_re = re.compile(r'(?:19|20)\d{2}\x2D(?:0\d{3}|[1-9]\d{3,})')
 
@@ -130,11 +145,13 @@ class Ruleset():
     :param normalize: try to convert and normalize date and CVE related metadata values into the schema defined by BETTER.
         Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.
     :type normalize: bool, optional
+    :param enhance: enhance metadata by adding additional key-value pairs based on the rules
+    :type enhance: bool, optional
     :param modify_metadata: modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
     :type modify_metadata: bool, optional
     :raises: `AristotleException`
     """
-    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, modify_metadata=False):
+    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, enhance=False, modify_metadata=False):
         """Constructor."""
 
         # dict keys are sids
@@ -148,6 +165,7 @@ class Ruleset():
         self.ignore_classtype_keyword = ignore_classtype_keyword
         self.ignore_filename = ignore_filename
         self.normalize = normalize
+        self.enhance = enhance
         self.modify_metadata = modify_metadata
         if not metadata_filter:
             self.metadata_filter = None
@@ -180,6 +198,10 @@ class Ruleset():
                     # probably a mis-typed filename
                     print_error("'{}' is not a valid file or directory, and does not appear to be a string containing valid rule(s)".format(rules), fatal=True)
                 self.parse_rules(rules)
+
+            if self.enhance:
+                self._enhance_metadata()
+
         except Exception as e:
             print_error("Unable to process rules '{}':\n{}".format(rules, e), fatal=True)
 
@@ -212,6 +234,119 @@ class Ruleset():
                 self.metadata_filter = metadata_filter
         except Exception as e:
             print_error("Unable to process metadata_filter '{}':\n{}".format(metadata_filter, e), fatal=True)
+
+    def reduce_ipval(self, ipval):
+        """ Take an "IP" value (raw IP, list, ipvar) and reduce it to one of the following:
+                - any
+                - HOME_NET
+                - EXTERNAL_NET
+                - UNDETERMINED
+
+            Assumptions:
+                - ipval doesn't contain any nested lists TODO: recurse?
+
+            :param ipval: f
+            :type ipval: string, required
+            :returns: 'any', 'HOME_NET', 'EXTERNAL_NET', or 'UNDETERMINED'
+            :rtype: string
+        """
+        return_values = ["any", "HOME_NET", "EXTERNAL_NET", "UNDETERMINED"]
+        if ipval in return_values:
+            return ipval
+
+    def _enhance_metadata(self):
+        """ Enhance metadata on all the rules by adding additional key-value pairs based on the rule.
+            Specifically:
+                - 'flow' key-value pair
+                - 'direction' key-value pair
+                - TBD
+        """
+        for sid in self.metadata_dict.keys():
+            rule = self.metadata_dict[sid]['raw_rule']
+
+            rule_match_obj = rule_re.match(rule)
+            if not rule_match_obj:
+                print_error("Invalid rule: '{}'".format(rule), fatal=True)
+
+            # get set of keywords (and modifiers, technically)
+            keywords = rule_match_obj.group("BODY")
+            keywords = list(set([k.split(':')[0].strip() for k in keywords.split(';') if len(k.strip()) > 1]))
+
+            # get/add protocols
+            proto = rule_match_obj.group("PROTO").lower().strip()
+            self.add_metadata(sid, 'protocols', proto)
+            match_obj = app_layer_protocol_re.search(rule)
+            if match_obj:
+                proto = match_obj.group("ALPROTO").lower().strip()
+                if not proto.startswith('!') and proto != "failed":
+                    self.add_metadata(sid, 'protocols', proto)
+            # check keywords known to be associated with particular protocols
+            known_protocols = ['http', 'dns', 'tls', 'ssh', 'snmp', 'sip', 'rfb', 'mqtt', 'http2',
+                               'ja3', 'dnp3', 'cip', 'enip', 'ftpdata', 'krb5', ]
+            for app_proto in known_protocols:
+                htest = [k for k in keywords if k.startswith("{}_".format(app_proto)) or k.startswith("{}.".format(app_proto))]
+                if len(htest) > 0:
+                    if app_proto == "ja3":
+                        app_proto = "tls"
+                    elif app_proto == "cip":
+                        app_proto = "enip"
+                    elif app_proto == "ftpdata":
+                        app_proto = "ftp"
+                    elif app_proto == "krb5":
+                        app_proto = "kerberos"
+                    self.add_metadata(sid, 'protocols', app_proto)
+
+            # get flow
+            match_obj = flow_re.search(rule)
+            if match_obj:
+                # normalize so direction is "to_client" or "to_server"
+                flow_str = match_obj.group("FLOW").lower().replace("from_server", "to_client").replace("from_client", "to_sever")
+                flows = [f.strip() for f in flow_str.split(',')]
+                direction_found = False
+                for v in flows:
+                    self.add_metadata(sid, 'flow', v)
+                    if v.startswith("to_"):
+                        direction_found = True
+                if not direction_found:
+                    # check keywords that force direction (request or response)
+                    # This hits the most common ones; further checking could be done
+                    # e.g. mqtt keywords.
+                    request_keywords = ["http.uri", "http_uri", "http.uri.raw", "http_raw_uri",
+                                        "http.method", "http_method", "http.request_line",
+                                        "http_request_line", "http.request_body", "http_client_body",
+                                        "http.user_agent", "http_user_agent", "http.host", "http_host",
+                                        "http.host.raw", "http_raw_host", "http.accept", "http_accept",
+                                        "http.accept_lang", "http_accept_lang", "http.accept_enc",
+                                        "http_accept_enc", "http.referer", "http_referer", "http.connection",
+                                        "http_connection", "dns.query", "dns_query", "ssh.hassh.string",
+                                        "ja3.hash", "ja3.string", "ftpdata_command", "krb5_cname",
+                                        "sip.method", "sip.uri", "sip.request_line"]
+                    response_keywords = ["http.stat_msg", "http_stat_msg", "http.stat_code", "http_stat_code",
+                                          "http.response_line", "http_response_line", "http.response_body",
+                                          "http_server_body", "http.server", "http.location", "ssh.hassh.server",
+                                          "ssh.hassh.server.string", "ja3s.hash", "ja3s.string", "krb5_sname",
+                                          "sip.stat_code", "sip.stat_msg", "sip.response_line"]
+                    matches = [k for k in keywords if k in request_keywords]
+                    if len(matches) > 0:
+                        self.add_metadata(sid, 'flow', 'to_server')
+                    else:
+                        matches = [k for k in keywords if k in response_keywords]
+                        if len(matches) > 0:
+                            self.add_metadata(sid, 'flow', 'to_client')
+                        else:
+                            print_debug("Flow direction could not be determined for sid '{}'.".format(sid))
+            else:
+                print_debug("No 'flow' keyword found for SID '{}'.".format(sid))
+
+            # calculate direction
+            sip_reduced = self.reduce_ipval(rule_match_obj.group("SRCIP"))
+            sip_reduced = self.reduce_ipval(rule_match_obj.group("DSTIP"))
+
+            #self.metadata_dict[sid]
+            #self.metadata_dict[sid]['raw_rule']
+
+        # TODO: remove duplicates
+        return
 
     def normalize_better(self, k, v):
         """ Try to convert date and cve related metadata values to conform to the
@@ -248,6 +383,33 @@ class Ruleset():
             retlist.append([k, v])
         return retlist
 
+    def add_metadata(self, sid, key, value):
+        """ Update self.metadata_dict and self.keys_dict data structures for the
+            given sid, key and value.
+
+            :param sid: sid to update
+            :type sid: int, required
+            :param key: key to add or update
+            :type key: string, required
+            :param value: value corresponding to given key
+            :type value: string, required
+
+        """
+        if not sid in self.metadata_dict.keys():
+            print_error("add_metadata() called for sid '{}' but sid is invalid (does not exist).".format(sid))
+            return
+        # populate metadata_dict
+        if key not in self.metadata_dict[sid]['metadata'].keys():
+            self.metadata_dict[sid]['metadata'][key] = []
+        if value not in self.metadata_dict[sid]['metadata'][key]:
+            self.metadata_dict[sid]['metadata'][key].append(value)
+        # populate keys_dict
+        if key not in self.keys_dict.keys():
+            self.keys_dict[key] = {}
+        if value not in self.keys_dict[key].keys():
+            self.keys_dict[key][value] = []
+        if sid not in self.keys_dict[key][value]:
+            self.keys_dict[key][value].append(sid)
 
     def parse_rules(self, rules, filename=None):
         """Parses the given rules and builds/updates necessary data structures.
@@ -266,6 +428,7 @@ class Ruleset():
                 if line.lstrip().startswith('#'):
                     if disabled_rule_re.match(line):
                         is_disabled_rule = True
+                        line = line[1:]
                     else:
                         # valid comment (not disabled rule)
                         print_debug("Skipping comment: {}".format(line))
@@ -343,16 +506,7 @@ class Ruleset():
                         kvs = [kvsplit]
                     for current_kvp in kvs:
                         k,v = current_kvp
-                        # populate metadata_dict
-                        if k not in self.metadata_dict[sid]['metadata'].keys():
-                            self.metadata_dict[sid]['metadata'][k] = []
-                        self.metadata_dict[sid]['metadata'][k].append(v)
-                        # populate keys_dict
-                        if k not in self.keys_dict.keys():
-                            self.keys_dict[k] = {}
-                        if v not in self.keys_dict[k].keys():
-                            self.keys_dict[k][v] = []
-                        self.keys_dict[k][v].append(sid)
+                        self.add_metadata(sid, k, v)
                     for k in self.metadata_dict[sid]['metadata'].keys():
                         # remove duplicate values for the same key
                         self.metadata_dict[sid]['metadata'][k] = list(set(self.metadata_dict[sid]['metadata'][k]))
@@ -363,7 +517,6 @@ class Ruleset():
                     # be cast as str when used the same way other keys and values are used.
                     self.metadata_dict[sid]['metadata']['sid'] = [str(sid)]
                     self.keys_dict['sid'][str(sid)] = [sid]
-
         except Exception as e:
             traceback.print_exc(e)
             print_error("Problem loading rules: {}".format(e), fatal=True)
@@ -801,6 +954,12 @@ AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 801814
                             required=False,
                             default=False,
                             help="try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics.  Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.")
+        parser.add_argument("-e", "--enhance",
+                            action="store_true",
+                            dest="enhance",
+                            required=False,
+                            default=False,
+                            help="enhance metadata by adding additional key-value pairs based on the rules.")
         parser.add_argument("-t", "--ignore-classtype", "--ignore-classtype-keyword",
                             action="store_true",
                             dest="ignore_classtype_keyword",
@@ -868,7 +1027,7 @@ def main():
         rs = Ruleset(rules=args.rules,
                      ignore_classtype_keyword=args.ignore_classtype_keyword,
                      ignore_filename=args.ignore_filename,
-                     normalize=args.normalize, modify_metadata=args.modify_metadata)
+                     normalize=args.normalize, enhance=args.enhance, modify_metadata=args.modify_metadata)
         rs.print_header()
         if len(args.stats) > 0:
             # print stats for specified key(s)
@@ -889,7 +1048,9 @@ def main():
                  include_disabled_rules=args.include_disabled_rules,
                  ignore_classtype_keyword=args.ignore_classtype_keyword,
                  ignore_filename=args.ignore_filename,
-                 normalize=args.normalize, modify_metadata=args.modify_metadata)
+                 normalize=args.normalize,
+                 enhance=args.enhance,
+                 modify_metadata=args.modify_metadata)
 
     filtered_sids = rs.filter_ruleset()
 
