@@ -2,12 +2,14 @@
 # TODO:
 #
 # Add "enhanced" option to add metadata:
-#   - flow (direction)
-#   - protocols
+#   - flow (direction) [DONE]
+#    - detection direction [DONE]
+#   - protocols [DONE]
 #   - attack_target?
 #   - custom "category"
-#   - 
+#   - ?
 #
+# TODO: use config file? yaml?
 
 #!/usr/bin/env python
 """Aristotle
@@ -70,6 +72,8 @@ flow_re = re.compile(r"[\s\x3B\x28]flow\s*\x3A\s*(?P<FLOW>[^\x3B]+?)\x3B")
 app_layer_protocol_re = re.compile(r"[\s\x3B\x28]app-layer-protocol\s*\x3A\s*(?P<ALPROTO>[^\x3B]+?)\x3B")
 rule_msg_re = re.compile(r"[\s\x3B\x28]msg\s*\x3A\s*\x22(?P<MSG>[^\x22]+?)\x22\s*\x3B")
 cve_re = re.compile(r'(?:19|20)\d{2}\x2D(?:0\d{3}|[1-9]\d{3,})')
+
+ipval_cache = {}
 
 if os.isatty(0) and sys.stdout.isatty():
     # ANSI colors; see https://en.wikipedia.org/wiki/ANSI_escape_code
@@ -153,7 +157,6 @@ class Ruleset():
     """
     def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, enhance=False, modify_metadata=False):
         """Constructor."""
-
         # dict keys are sids
         self.metadata_dict = {}
         # dict keys are keys from metadata key-value pairs
@@ -201,8 +204,9 @@ class Ruleset():
 
             if self.enhance:
                 self._enhance_metadata()
-
+            print_debug("Total cache size: {}".format(len(ipval_cache.keys())))
         except Exception as e:
+            traceback.print_exc(e)
             print_error("Unable to process rules '{}':\n{}".format(rules, e), fatal=True)
 
     def set_metadata_filter(self, metadata_filter):
@@ -238,27 +242,107 @@ class Ruleset():
     def reduce_ipval(self, ipval):
         """ Take an "IP" value (raw IP, list, ipvar) and reduce it to one of the following:
                 - any
-                - HOME_NET
-                - EXTERNAL_NET
+                - $HOME_NET
+                - $EXTERNAL_NET
                 - UNDETERMINED
 
             Assumptions:
-                - ipval doesn't contain any nested lists TODO: recurse?
+                - ipval doesn't contain any nested lists
+                    - (could recurse on nested lists but once we start reducing, we loose accuraccy pretty fast.)
+                    - (most 3rd party rulesets should rarely, if ever, need to include rules that require nested IPs/ranges.)
 
-            :param ipval: f
+            :param ipval: IP part of a rule, e.g. $HOME_NET, 10.0.0.0/8, [192.168.1.0/24,192.168.2.0/24], etc.
             :type ipval: string, required
-            :returns: 'any', 'HOME_NET', 'EXTERNAL_NET', or 'UNDETERMINED'
+            :returns: 'any', '$HOME_NET', '$EXTERNAL_NET', or 'UNDETERMINED'
             :rtype: string
         """
-        return_values = ["any", "HOME_NET", "EXTERNAL_NET", "UNDETERMINED"]
+        global ipval_cache
+        unknown = "UNDETERMINED"
+        return_values = ["any", "$HOME_NET", "$EXTERNAL_NET", "UNDETERMINED"]
         if ipval in return_values:
             return ipval
+        if len(ipval) < 2:
+            print_error("Bad IPVAR found: {}".format(ipval))
+            return unknown
+        # check cache. Testing shows using a cache doesn't speed things up....
+        cached_val = ipval_cache.get(ipval)
+        if cached_val:
+            return ipval_cache[ipval]
+        original_val = ipval
+        negated = False
+        if ipval[0] == '!':
+            negated = True
+            ipval = ipval[1:]
+        if ipval[0] == '[':
+            ipval = ipval[1:-1]
+        brackets = [c for c in ipval if c == '[']
+        if len(brackets) > 0:
+            print_error("Double nested ipval found: {}.  Cannot reduce".format(original_ipval))
+            return unknown
+        ipval_list = [v.strip() for v in ipval.split(',')]
+        reduced_ipval = self._reduce_ipval_helper(ipval_list, global_negate=negated)
+        print_debug(" Original: {}\nProcessed: {}\n  Reduced: {}\n".format(original_val, ipval, reduced_ipval))
+        ipval_cache[original_val] = reduced_ipval
+        return reduced_ipval
+
+    def _reduce_ipval_helper(self, vals, global_negate=False):
+        """ Take in list of IPVAR values and reduce to 'any', '$HOME_NET",
+            '$EXTERNAL_NET", or 'UNKNOWN'.
+            Assumption: no overlap in home_net and external_net vars.
+
+            :param vals: list of IPVAR values
+            :type vals: list, required
+            :param global_negate: invert response
+            :type global_negate: bool, optional
+        """
+        home_net_vars = ["$HOME_NET", "$DNS_SERVERS", "$HTTP_SERVERS", "$SMTP_SERVERS", "$SQL_SERVERS",
+                 "$TELNET_SERVERS", "$FTP_SERVERS", "$DNP3_CLIENT", "$DNP3_SERVER", "$ICCP_CLIENT",
+                 "$ICCP_SERVER", "$ENIP_CLIENT", "$ENIP_SERVER", "$MODBUS_CLIENT", "$MODBUS_SERVER"]
+        external_net_vars = ["$EXTERNAL_NET", "$RFC1918", "$GOTOMYPC", "$AIM_SERVERS"]
+        # add CGNAT?
+        known_localnet_ips = ["10.0.0.0/8", "192.168.0.0/24", "172.16.0.0/12", "127.0.0.0/8", "255.255.255.255"]
+        unknown = "UNDETERMINED"
+        rfc1918_found = False
+        if 'any' in vals:
+            return 'any'
+        for v in vals:
+            negated = global_negate
+            if v[0] == '!':
+                negated = not global_negate
+                v = v[1:]
+            # Assume variable ending in "_SERVERS" is HOME_NET unless already listed as in EXTERNAL_NET
+            if v not in external_net_vars and v not in home_net_vars and v.endswith("_NET"):
+                home_net_vars.append(v)
+            if not negated:
+                if v in home_net_vars:
+                    return "$HOME_NET"
+                if v in external_net_vars:
+                    return "$EXTERNAL_NET"
+            else:
+                if v in home_net_vars:
+                    return "$EXTERNAL_NET"
+                if v in external_net_vars:
+                    return "$HOME_NET"
+            if v.startswith('$'):
+                print_error("Unclassified variable found in _reduce_ipval_helper(): '{}'".format(v))
+                return unknown
+            # this *should* be an IP or CIDR block
+            if v in known_localnet_ips and not negated:
+                rfc1918_found = True
+        # at this point we *should* be left with a list of IPs.  Assume these are EXTERNAL_NET,
+        # even if negated, unless explicit RFC1918 has been seen.
+        if rfc1918_found:
+            return "$HOME_NET"
+        else:
+            return "$EXTERNAL_NET"
+        # never reached
+        return unknown
 
     def _enhance_metadata(self):
         """ Enhance metadata on all the rules by adding additional key-value pairs based on the rule.
             Specifically:
                 - 'flow' key-value pair
-                - 'direction' key-value pair
+                - 'detection direction' key-value pair
                 - TBD
         """
         for sid in self.metadata_dict.keys():
@@ -267,6 +351,9 @@ class Ruleset():
             rule_match_obj = rule_re.match(rule)
             if not rule_match_obj:
                 print_error("Invalid rule: '{}'".format(rule), fatal=True)
+
+            # get rule direction arrow ("->" or "<>")
+            direction_arrow = rule_match_obj.group("DIRECTION")
 
             # get set of keywords (and modifiers, technically)
             keywords = rule_match_obj.group("BODY")
@@ -334,18 +421,44 @@ class Ruleset():
                         if len(matches) > 0:
                             self.add_metadata(sid, 'flow', 'to_client')
                         else:
-                            print_debug("Flow direction could not be determined for sid '{}'.".format(sid))
+                            print_debug("Flow direction could not be determined from 'flow' keyword for sid '{}'.".format(sid))
             else:
                 print_debug("No 'flow' keyword found for SID '{}'.".format(sid))
 
             # calculate direction
-            sip_reduced = self.reduce_ipval(rule_match_obj.group("SRCIP"))
-            sip_reduced = self.reduce_ipval(rule_match_obj.group("DSTIP"))
+            sip_val = rule_match_obj.group("SRCIP")
+            dip_val = rule_match_obj.group("DSTIP")
+            sip_reduced = self.reduce_ipval(sip_val)
+            dip_reduced = self.reduce_ipval(dip_val)
 
-            #self.metadata_dict[sid]
-            #self.metadata_dict[sid]['raw_rule']
+            #print_debug("{}\n{}\n".format(sip_val, sip_reduced))
+            #print_debug("{}\n{}\n".format(dip_val, dip_reduced))
 
-        # TODO: remove duplicates
+            #self.metadata_dict[sid]['sip_reduced'] = sip_reduced
+            #self.metadata_dict[sid]['dip_reduced'] = dip_reduced
+
+            # calculate detection direction; possible values:
+            # INBOUND, INBOUND-NOTEXCLUSIVE, OUTBOUND, OUTBOUND-NOTEXCLUSIVE,
+            # INTERNAL, ANY, BOTH, UNKNOWN
+            if direction_arrow == "<>":
+                detection_direction = "BOTH"
+            elif sip_reduced == "$EXTERNAL_NET" and dip_reduced == "$HOME_NET":
+                detection_direction = "INBOUND"
+            elif sip_reduced == "any" and dip_reduced == "$HOME_NET":
+                detection_direction = "INBOUND-NOTEXCLUSIVE"
+            elif sip_reduced == "$HOME_NET" and dip_reduced == "$EXTERNAL_NET":
+                detection_direction = "OUTBOUND"
+            elif sip_reduced == "$HOME_NET" and dip_reduced == "any":
+                detection_direction = "OUTBOUND-NOTEXCLUSIVE"
+            elif sip_reduced == "$HOME_NET" and dip_reduced == "$HOME_NET":
+                detection_direction = "INTERNAL"
+            elif sip_reduced == "any" and dip_reduced == "any":
+                detection_direction = "ANY"
+            else:
+                detection_direction = "UNKNOWN"
+            self.add_metadata(sid, 'detection_direction', detection_direction)
+
+        # TODO: remove duplicates?
         return
 
     def normalize_better(self, k, v):
