@@ -3,32 +3,33 @@ Usage
 
 .. code:: text
 
-    usage: aristotle.py [-h] -r RULES [-f METADATA_FILTER] [--summary] [-o OUTFILE] [-s [STATS [STATS ...]]] [-i] [-t] [-n] [-m] [-q] [-d]
+    usage: aristotle.py [-h] -r RULES [-f METADATA_FILTER] [--summary] [-o OUTFILE] [-s [STATS [STATS ...]]] [-i] [-n] [-e] [-t] [-g] [-m] [-q] [-d]
 
     Filter Suricata and Snort rulesets based on metadata keyword values.
 
     optional arguments:
       -h, --help            show this help message and exit
       -r RULES, --rules RULES, --ruleset RULES
-                            path to rules file or string containing the ruleset
+                            path to a rules file, a directory containing '.rules' file(s), or string containing the ruleset
       -f METADATA_FILTER, --filter METADATA_FILTER
                             Boolean filter string or path to a file containing it
-      --summary             output a summary of the filtered ruleset to stdout; if an output file is given, the full, filtered ruleset will still be
-                            written to it.
+      --summary             output a summary of the filtered ruleset to stdout; if an output file is given, the full, filtered ruleset will still be written to it.
       -o OUTFILE, --output OUTFILE
                             output file to write filtered ruleset to
       -s [STATS [STATS ...]], --stats [STATS [STATS ...]]
-                            display ruleset statistics about specified key(s). If no key(s) supplied, then summary statistics for all keys will be
-                            displayed.
+                            display ruleset statistics about specified key(s). If no key(s) supplied, then summary statistics for all keys will be displayed.
       -i, --include-disabled
                             include (effectively enable) disabled rules when applying the filter
-      -t, --ignore-classtype, --ignore-classtype-keyword
-                            don't appropriate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting
       -n, --normalize, --better, --iso8601
-                            try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics. Dates are
-                            normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.
+                            try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics. Dates are normalized to the format YYYY-
+                            MM-DD and CVEs to YYYY-<num>.
+      -e, --enhance         enhance metadata by adding additional key-value pairs based on the rules.
+      -t, --ignore-classtype, --ignore-classtype-keyword
+                            don't ignore_filenameincorporate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting.
+      -g, --ignore-filename
+                            don't incorporate the filename of the rules file into the metadata structure for filtering and reporting.
       -m, --modify-metadata
-                            modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
+                           modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
       -q, --quiet, --suppress_warnings
                             quiet; suppress warning logging
       -d, --debug           turn on debug logging
@@ -209,7 +210,7 @@ Normalize
 ---------
 
 The normalize command line option (also supported in
-the :ref:`Ruleset class constructor <target Ruleset class>` wil do the following
+the :ref:`Ruleset class constructor <target Ruleset class>` will do the following
 to the internal data structure used to store metadata and filter against:
 
   - ``cve`` value normalized to ``YYYY-<num>``. If multiple CVEs are represented in the
@@ -225,6 +226,36 @@ included in the output.
 
 .. _target Update Metadata:
 
+Enhance
+--------
+
+The enhance command line option (also supported in
+the :ref:`Ruleset class constructor <target Ruleset class>` will analyze the rule(s) and attempt
+to update the metadata on each.
+
+  - ``flow`` key with values normalized to be ``to_sever``   ` or ``to_client``.
+  - ``protocols`` key and applicable values, per the `BETTER Schema <https://better-schema.readthedocs.io/en/latest/schema.html#defined-keys>`__.
+  - ``detection_direction`` keyword (see below).
+
+Detection Direction
+...................
+
+The ``detection_direction`` metadata key attempts to normalize the directionality of traffic the rule
+detects on. To do this, the source and destination (IP/IPVAR) sections of the rule are reduced down to "$HOME_NET",
+"$EXTERNAL_NET", "any", or "UNDETERMINED" and used to set the ``detection_direction`` value as follows:
+
+=============================  ==============================
+detection_direction value      reduced condition
+=============================  ==============================
+INBOUND                        ``$EXTERNAL_NET -> $HOME_NET``
+INBOUND-NOTEXCLUSIVE           ``any -> $HOME_NET``
+OUTBOUND                       ``$HOME_NET -> $EXTERNAL_NET``
+OUTBOUND-NOTEXCLUSIVE          ``$HOME_NET -> any``
+INTERNAL                       ``$HOME_NET -> $HOME_NET``
+ANY                            ``any -> any``
+BOTH                           direction in rule is ``<>``
+=============================  ==============================
+
 Update Metadata
 ---------------
 
@@ -238,9 +269,9 @@ be updated accordingly:
 
   - ``sid`` key and value added to metadata.
   - ``classtype`` key and value added to metadata, if the ``classtype`` keyword is present in the rule and the option to ignore classtype is not set.
+  - ``filename`` key and value added to metadata, if the rule(s) came from a file and the option to ignore filename is not set.
   - if the `Normalize`_ option is set, any changes done by that will be included.
-  - ``cve`` value normalized to ``YYYY-<num>`` if normalize option set.
-  - date key values normalized to ``YYYY-MM-DD`` if normalize option set.
+  - if the `Enhance`_ options is set, any changes done by that will be included.
 
 Additionally, the order of the key-value pairs in the metadata will be sorted by
 key and then value.

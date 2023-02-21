@@ -147,7 +147,7 @@ class Ruleset():
     :param ignore_filename: don't incorporate the filename of the rules file into the metadata structure for filtering and reporting
     :type ignore_filename: bool, optional
     :param normalize: try to convert and normalize date and CVE related metadata values into the schema defined by BETTER.
-        Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.
+        Dates are normalized to the format YYYY-MM-DD and CVEs to YYYY-<num>.
     :type normalize: bool, optional
     :param enhance: enhance metadata by adding additional key-value pairs based on the rules
     :type enhance: bool, optional
@@ -1019,13 +1019,13 @@ Example:
 python3 aristotle/aristotle.py -r examples/example.rules --summary -n
 -f '(("priority high" AND "malware <ALL>") AND "created_at >= 2018-01-01")
 AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 80181444"'
-"""
+""" + "\r\n"
             )
         parser.add_argument("-r", "--rules", "--ruleset",
                             action="store",
                             dest="rules",
                             required=True,
-                            help="path to rules file or string containing the ruleset")
+                            help="path to a rules file, a directory containing '.rules' file(s), or string containing the ruleset")
         parser.add_argument("-f", "--filter",
                             action="store",
                             dest="metadata_filter",
@@ -1066,7 +1066,7 @@ AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 801814
                             dest="normalize",
                             required=False,
                             default=False,
-                            help="try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics.  Dates are normalized to the format YYY-MM-DD and CVEs to YYYY-<num>.")
+                            help="try to convert date and cve related metadata values to conform to the BETTER schema for filtering and statistics.  Dates are normalized to the format YYYY-MM-DD and CVEs to YYYY-<num>.")
         parser.add_argument("-e", "--enhance",
                             action="store_true",
                             dest="enhance",
@@ -1078,13 +1078,13 @@ AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 801814
                             dest="ignore_classtype_keyword",
                             required=False,
                             default=False,
-                            help="don't ignore_filenameincorporate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting.")
+                            help="don't incorporate the 'classtype' keyword and value from the rule into the metadata structure for filtering and reporting.")
         parser.add_argument("-g", "--ignore-filename",
                             action="store_true",
                             dest="ignore_filename",
                             required=False,
                             default=False,
-                            help="don't incorporate the filename of the rules file into the metadata structure for filtering and reporting.")
+                            help="don't incorporate the 'filename' keyword (filename of the rules file) into the metadata structure for filtering and reporting.")
         parser.add_argument("-m", "--modify-metadata",
                             action="store_true",
                             dest="modify_metadata",
