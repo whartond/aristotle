@@ -247,13 +247,13 @@ detects on. To do this, the source and destination (IP/IPVAR) sections of the ru
 =============================  ==============================
 detection_direction value      reduced condition
 =============================  ==============================
-INBOUND                        ``$EXTERNAL_NET -> $HOME_NET``
-INBOUND-NOTEXCLUSIVE           ``any -> $HOME_NET``
-OUTBOUND                       ``$HOME_NET -> $EXTERNAL_NET``
-OUTBOUND-NOTEXCLUSIVE          ``$HOME_NET -> any``
-INTERNAL                       ``$HOME_NET -> $HOME_NET``
-ANY                            ``any -> any``
-BOTH                           direction in rule is ``<>``
+inbound                        ``$EXTERNAL_NET -> $HOME_NET``
+inbound-notexclusive           ``any -> $HOME_NET``
+outbound                       ``$HOME_NET -> $EXTERNAL_NET``
+outbound-notexclusive          ``$HOME_NET -> any``
+internal                       ``$HOME_NET -> $HOME_NET``
+any                            ``any -> any``
+both                           direction in rule is ``<>``
 =============================  ==============================
 
 Update Metadata

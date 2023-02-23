@@ -438,24 +438,24 @@ class Ruleset():
             #self.metadata_dict[sid]['dip_reduced'] = dip_reduced
 
             # calculate detection direction; possible values:
-            # INBOUND, INBOUND-NOTEXCLUSIVE, OUTBOUND, OUTBOUND-NOTEXCLUSIVE,
-            # INTERNAL, ANY, BOTH, UNKNOWN
+            # inbound, inbound-notexclusive, outbound, outbound-notexclusive,
+            # internal, any, both, unknown
             if direction_arrow == "<>":
-                detection_direction = "BOTH"
+                detection_direction = "both"
             elif sip_reduced == "$EXTERNAL_NET" and dip_reduced == "$HOME_NET":
-                detection_direction = "INBOUND"
+                detection_direction = "inbound"
             elif sip_reduced == "any" and dip_reduced == "$HOME_NET":
-                detection_direction = "INBOUND-NOTEXCLUSIVE"
+                detection_direction = "inbound-notexclusive"
             elif sip_reduced == "$HOME_NET" and dip_reduced == "$EXTERNAL_NET":
-                detection_direction = "OUTBOUND"
+                detection_direction = "outbound"
             elif sip_reduced == "$HOME_NET" and dip_reduced == "any":
-                detection_direction = "OUTBOUND-NOTEXCLUSIVE"
+                detection_direction = "outbound-notexclusive"
             elif sip_reduced == "$HOME_NET" and dip_reduced == "$HOME_NET":
-                detection_direction = "INTERNAL"
+                detection_direction = "internal"
             elif sip_reduced == "any" and dip_reduced == "any":
-                detection_direction = "ANY"
+                detection_direction = "any"
             else:
-                detection_direction = "UNKNOWN"
+                detection_direction = "unknown"
             self.add_metadata(sid, 'detection_direction', detection_direction)
 
         # TODO: remove duplicates?
@@ -508,6 +508,10 @@ class Ruleset():
             :type value: string, required
 
         """
+        # key-value pairs are case insensitive; make everything lower case (needed for accurate matching
+        # in filters) and strip leading and trailing whitespace.
+        key = key.lower().strip()
+        value = value.lower().strip()
         if not sid in self.metadata_dict.keys():
             print_error("add_metadata() called for sid '{}' but sid is invalid (does not exist).".format(sid))
             return
