@@ -7,7 +7,7 @@
 #   - protocols [DONE]
 #   - attack_target?
 #   - custom "category"
-#   - ?
+#   - pattern pseudo keyword in filter string(s)!
 #
 # TODO: use config file? yaml?
 
@@ -71,7 +71,7 @@ classtype_keyword_re = re.compile(r"[\x28\x3B]\s*classtype\s*\x3A\s*(?P<CLASSTYP
 flow_re = re.compile(r"[\s\x3B\x28]flow\s*\x3A\s*(?P<FLOW>[^\x3B]+?)\x3B")
 app_layer_protocol_re = re.compile(r"[\s\x3B\x28]app-layer-protocol\s*\x3A\s*(?P<ALPROTO>[^\x3B]+?)\x3B")
 rule_msg_re = re.compile(r"[\s\x3B\x28]msg\s*\x3A\s*\x22(?P<MSG>[^\x22]+?)\x22\s*\x3B")
-cve_re = re.compile(r'(?:19|20)\d{2}\x2D(?:0\d{3}|[1-9]\d{3,})')
+cve_re = re.compile(r"(?:19|20)\d{2}\x2D(?:0\d{3}|[1-9]\d{3,})")
 
 ipval_cache = {}
 
@@ -576,12 +576,21 @@ class Ruleset():
                 if (lineno % 1000 == 0):
                     print_debug("metadata_str for sid {}:\n{}".format(sid, metadata_str))
 
+                # extract 'msg' field
+                matchobj = rule_msg_re.search(line)
+                if not matchobj:
+                    print_warning("Unable to extract rule msg from SID '{}'.".format(sid))
+                    msg = ""
+                else:
+                    msg = matchobj.group("MSG")
+
                 # build dict
                 if sid in self.metadata_dict.keys():
                     print_warning("Duplicate sid '{}' found{} Only the latest enabled one will be included.".format(sid, "!" if not filename else " in file '{}'!".format(filename)))
                     if is_disabled_rule:
                         continue
                 self.metadata_dict[sid] = {'metadata': {},
+                                      'msg': msg,
                                       'disabled': False,
                                       'default-disabled': False,
                                       'raw_rule': line
@@ -790,6 +799,26 @@ class Ruleset():
                                     (not self.metadata_dict[s]['disabled'] or self.include_disabled_rules)]
                 except Exception as e:
                     print_error("Unable to process '{}' value '{}' (as float):\n{}".format(k, v, e), fatal=True)
+        elif k == "msg_regex":
+            # apply regex pattern to rule msg field
+            if not (v.startswith('/') or v.endswith('.') or v.endswith("/i")):
+                print_error("Bad {} pattern '{}' in filter string. Pattern must start with '/' and end with '/' or '/i'.".format(k, v), fatal=True)
+            insensitive = False
+            re_flag = 0
+            re_v = v
+            if v.endswith('i'):
+                insensitive = True
+                re_flag = re.I
+                re_v = v[:-1]
+            re_v = re_v.strip('/')
+            try:
+                pattern_re = re.compile(r"{}".format(re_v), flags=re_flag)
+            except Exception as e:
+                print_error("Unable to compile RegEx pattern '{}': {}".format(v, e), fatal=True)
+            try:
+                retarray = [s for s in self.metadata_dict.keys() if pattern_re.search(self.metadata_dict[s]['msg']) and (not self.metadata_dict[s]['disabled'] or self.include_disabled_rules)]
+            except Exception as e:
+                print_error("Problem matching RegEx pattern '{}': {}".format(v, e), fatal=True)
         else:
             if k not in self.keys_dict.keys():
                 print_warning("metadata key '{}' not found in ruleset".format(k))
@@ -854,14 +883,17 @@ class Ruleset():
             # nothing to filter on so exit
             print_error("metadata_filter string contains no tokens", fatal=True)
         for t in mytokens:
-            # key-value pairs are case insensitive; make everything lower case
-            tstrip = t.strip('"').lower()
-            # also remove extra spaces before, after, and between key and value
-            tstrip = ' '.join([e.strip() for e in tstrip.strip().split(' ', 1)])
-            print_debug(tstrip)
-            if len(tstrip.split(' ')) == 1:
+            # key-value pairs are case insensitive; make everything lower case unless key is "msg_regex"
+            tsplit = [e.strip() for e in t.strip('"').strip().split(' ', 1)]
+            tsplit[0] = tsplit[0].lower()
+            if len(tsplit) == 2:
+                if not tsplit[0] == "msg_regex":
+                    tsplit[1] = tsplit[1].lower()
+                tstrip = ' '.join(tsplit)
+            else:
                 # if just key provided (no value), match on all values
                 tstrip = "{} <all>".format(tstrip)
+            print_debug(tstrip)
             # if token begins with digit, the tokenizer doesn't like it
             hashstr = "D" + hashlib.md5(tstrip.encode()).hexdigest()
             # add to mapp dict
