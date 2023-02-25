@@ -7,7 +7,9 @@
 #   - protocols [DONE]
 #   - attack_target?
 #   - custom "category"
-#   - pattern pseudo keyword in filter string(s)!
+#   - pattern pseudo keyword in filter string(s)! [DONE]
+#   - parse out MITRE ATT&CK from reference and populate metadata?
+#       - e.g. reference:url,attack.mitre.org/techniques/T1028/
 #
 # TODO: use config file? yaml?
 
@@ -442,8 +444,6 @@ class Ruleset():
             # internal, any, both, unknown
             if direction_arrow == "<>":
                 detection_direction = "both"
-            elif sip_reduced == "$EXTERNAL_NET" and dip_reduced == "$HOME_NET":
-                detection_direction = "inbound"
             elif sip_reduced == "any" and dip_reduced == "$HOME_NET":
                 detection_direction = "inbound-notexclusive"
             elif sip_reduced == "$HOME_NET" and dip_reduced == "$EXTERNAL_NET":
@@ -452,6 +452,11 @@ class Ruleset():
                 detection_direction = "outbound-notexclusive"
             elif sip_reduced == "$HOME_NET" and dip_reduced == "$HOME_NET":
                 detection_direction = "internal"
+            # $EXTERNAL_NET -> $EXTERNAL_NET only going to be seen in spoofed traffic (not TCP); set it to OUTBOUND
+            elif dip_reduced == "$EXTERNAL_NET":
+                detection_direction = "outbound"
+            elif sip_reduced == "$EXTERNAL_NET":
+                detection_direction = "inbound"
             elif sip_reduced == "any" and dip_reduced == "any":
                 detection_direction = "any"
             else:
