@@ -7,7 +7,8 @@
 #   - protocols [DONE]
 #   - attack_target?
 #   - custom "category"
-#   - pattern pseudo keyword in filter string(s)! [DONE]
+#   - filter string pattern string pseudo keyword to match against msg field [DONE]
+#   - filter string pattern string pseudo keyword to match against (full) raw rule [DONE]
 #   - parse out MITRE ATT&CK from reference and populate metadata?
 #       - e.g. reference:url,attack.mitre.org/techniques/T1028/
 #
@@ -804,7 +805,7 @@ class Ruleset():
                                     (not self.metadata_dict[s]['disabled'] or self.include_disabled_rules)]
                 except Exception as e:
                     print_error("Unable to process '{}' value '{}' (as float):\n{}".format(k, v, e), fatal=True)
-        elif k == "msg_regex":
+        elif k in ["msg_regex", "rule_regex"]:
             # apply regex pattern to rule msg field
             if not (v.startswith('/') or v.endswith('.') or v.endswith("/i")):
                 print_error("Bad {} pattern '{}' in filter string. Pattern must start with '/' and end with '/' or '/i'.".format(k, v), fatal=True)
@@ -821,7 +822,11 @@ class Ruleset():
             except Exception as e:
                 print_error("Unable to compile RegEx pattern '{}': {}".format(v, e), fatal=True)
             try:
-                retarray = [s for s in self.metadata_dict.keys() if pattern_re.search(self.metadata_dict[s]['msg']) and (not self.metadata_dict[s]['disabled'] or self.include_disabled_rules)]
+                if k == "msg_regex":
+                    retarray = [s for s in self.metadata_dict.keys() if pattern_re.search(self.metadata_dict[s]['msg']) and (not self.metadata_dict[s]['disabled'] or self.include_disabled_rules)]
+                else:
+                    # match against raw rule
+                    retarray = [s for s in self.metadata_dict.keys() if pattern_re.search(self.metadata_dict[s]['raw_rule']) and (not self.metadata_dict[s]['disabled'] or self.include_disabled_rules)]
             except Exception as e:
                 print_error("Problem matching RegEx pattern '{}': {}".format(v, e), fatal=True)
         else:
@@ -888,11 +893,11 @@ class Ruleset():
             # nothing to filter on so exit
             print_error("metadata_filter string contains no tokens", fatal=True)
         for t in mytokens:
-            # key-value pairs are case insensitive; make everything lower case unless key is "msg_regex"
+            # key-value pairs are case insensitive; make everything lower case unless key is "msg_regex" or "rule_regex"
             tsplit = [e.strip() for e in t.strip('"').strip().split(' ', 1)]
             tsplit[0] = tsplit[0].lower()
             if len(tsplit) == 2:
-                if not tsplit[0] == "msg_regex":
+                if not tsplit[0] in ["msg_regex", "rule_regex"]:
                     tsplit[1] = tsplit[1].lower()
                 tstrip = ' '.join(tsplit)
             else:
