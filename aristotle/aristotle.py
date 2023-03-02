@@ -46,6 +46,7 @@ import os
 import re
 import sys
 import traceback
+import yaml
 
 class AristotleException(Exception):
     pass
@@ -71,10 +72,12 @@ disabled_rule_re = re.compile(r"^\x23(?:pass|drop|reject|alert|sdrop|log|rejects
 sid_re = re.compile(r"[\x28\x3B]\s*sid\s*\x3A\s*(?P<SID>\d+)\s*\x3B")
 metadata_keyword_re = re.compile(r"(?P<PRE>[\x28\x3B]\s*metadata\s*\x3A\s*)(?P<METADATA>[^\x3B]+)\x3B")
 classtype_keyword_re = re.compile(r"[\x28\x3B]\s*classtype\s*\x3A\s*(?P<CLASSTYPE>[^\x3B]+)\x3B")
+priority_keyword_re = re.compile(r"(?P<PRE>[\x28\x3B]\s*priority\s*\x3A\s*)(?P<PRIORITY>[^\x3B]+)\x3B")
 flow_re = re.compile(r"[\s\x3B\x28]flow\s*\x3A\s*(?P<FLOW>[^\x3B]+?)\x3B")
 app_layer_protocol_re = re.compile(r"[\s\x3B\x28]app-layer-protocol\s*\x3A\s*(?P<ALPROTO>[^\x3B]+?)\x3B")
 rule_msg_re = re.compile(r"[\s\x3B\x28]msg\s*\x3A\s*\x22(?P<MSG>[^\x22]+?)\x22\s*\x3B")
 cve_re = re.compile(r"(?:19|20)\d{2}\x2D(?:0\d{3}|[1-9]\d{3,})")
+eol_re = re.compile(r"\x29$")
 
 ipval_cache = {}
 
@@ -156,9 +159,11 @@ class Ruleset():
     :type enhance: bool, optional
     :param modify_metadata: modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
     :type modify_metadata: bool, optional
+    :param aquinas_file: A filename of a YAML file of directives to apply actions on post-filtered rules based on filter strings.
+    :type aquinas_file: string, optional
     :raises: `AristotleException`
     """
-    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, enhance=False, modify_metadata=False):
+    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, enhance=False, modify_metadata=False, aquinas_file=None):
         """Constructor."""
         # dict keys are sids
         self.metadata_dict = {}
@@ -173,6 +178,10 @@ class Ruleset():
         self.normalize = normalize
         self.enhance = enhance
         self.modify_metadata = modify_metadata
+        self.aquinas_file = aquinas_file
+        if aquinas_file and not modify_metadata:
+            print_warning("'aquinas_file' specified but 'modify_metadata' not enabled.  Enabling 'modify_metadata'....")
+            self.modify_metadata = True
         if not metadata_filter:
             self.metadata_filter = None
             print_debug("No metadata_filter given to Ruleset() constructor")
@@ -184,6 +193,16 @@ class Ruleset():
         except Exception as e:
             print_error("Unable to process 'summary_max' value '{}' passed to Ruleset constructor:\n{}".format(summary_max, e))
 
+        if self.aquinas_file:
+            try:
+                if not os.path.isfile(self.aquinas_file):
+                    print_error("'{}': file not found.".format(self.aquinas_file), fatal=True)
+                with open(self.aquinas_file, 'r') as fh:
+                    self.aquinas_rules = yaml.safe_load(fh)
+            except Exception as e:
+                print_error("Unable to open YAML file '{}': {}".format(self.aquinas_file, e), fatal=True)
+            # YAML loaded, will process later and validate then
+        # deal with rules file(s)
         try:
             if os.path.isfile(rules):
                 with open(rules, 'r') as fh:
@@ -504,7 +523,7 @@ class Ruleset():
 
     def add_metadata(self, sid, key, value):
         """ Update self.metadata_dict and self.keys_dict data structures for the
-            given sid, key and value.
+            given sid, adding the passed in key and value.
 
             :param sid: sid to update
             :type sid: int, required
@@ -512,7 +531,6 @@ class Ruleset():
             :type key: string, required
             :param value: value corresponding to given key
             :type value: string, required
-
         """
         # key-value pairs are case insensitive; make everything lower case (needed for accurate matching
         # in filters) and strip leading and trailing whitespace.
@@ -533,6 +551,43 @@ class Ruleset():
             self.keys_dict[key][value] = []
         if sid not in self.keys_dict[key][value]:
             self.keys_dict[key][value].append(sid)
+
+    def delete_metadata(self, sid, key, value=None):
+        """ Update self.metadata_dict and self.keys_dict data structures for the
+            given sid, deleting the passed in key and value.  If value is not
+            provided (or None), delete all references involving the given key.
+
+            :param sid: sid to update
+            :type sid: int, required
+            :param key: key to add or update
+            :type key: string, required
+            :param value: value corresponding to given key
+            :type value: string, optional
+        """
+        key = key.lower().strip()
+        if value:
+            value = value.lower().strip()
+        if not sid in self.metadata_dict.keys():
+            print_error("delete_metadata() called for sid '{}' but sid is invalid (does not exist).".format(sid))
+            return
+        if value is None:
+            if key in self.metadata_dict[sid]['metadata'].keys():
+                del self.metadata_dict[sid]['metadata'][key]
+            else:
+                print_debug("key '{}' not found in sid '{}', cannot delete.".format(key, sid))
+            if key in self.keys_dict.keys():
+                for value in self.keys_dict[key].keys():
+                    if sid in self.keys_dict[key][value]:
+                        self.keys_dict[key][value].remove(sid)
+        else:
+            if key in self.metadata_dict[sid]['metadata'].keys():
+                if value in self.metadata_dict[sid]['metadata'][key]:
+                    self.metadata_dict[sid]['metadata'][key].remove(value)
+            if key in self.keys_dict.keys():
+                if value in self.keys_dict[key].keys():
+                    if sid in self.keys_dict[key][value]:
+                        self.keys_dict[key][value].remove(sid)
+
 
     def parse_rules(self, rules, filename=None):
         """Parses the given rules and builds/updates necessary data structures.
@@ -920,6 +975,123 @@ class Ruleset():
         except Exception as e:
             print_error("Problem processing metadata_filter string:\n\n{}\n\nError:\n{}".format(metadata_filter_original, e), fatal=True)
 
+    def _aquinas_apply(self, sids):
+        """ Applies the directives in the aquinas YAML file to passed in SIDs
+
+        :param sids: list of sids to scope to
+        :type sids: list, required
+        :returns: list of matching SIDs
+        :rtype: list
+        """
+        # TODO: support 'disable' action?
+        # TODO: call filter_ruleset() but then keep intersection of returned sids and sids passed to this function
+
+        # see docs
+        valid_actions_str = ["disable"]
+        valid_actions_dict = ["add_metadata",
+                              "add_metadata_exclusive",
+                              "delete_metadata",
+                              "set_priority",
+                              "regex_sub"
+                             ]
+        valid_actions = valid_actions_str + valid_actions_dict
+
+        print_debug("aquinas_apply() called")
+        if "rules" not in self.aquinas_rules.keys():
+            print_error("No 'rules' directives defined in file '{}'.".format(self.aquinas_file), fatal=True)
+        if "version" in self.aquinas_rules.keys():
+            print_debug("Processing Aquinas rules, version {}.".format(self.aquinas_rules['version']))
+        for rule in self.aquinas_rules['rules']:
+            rule_name = "<undefined>"
+            if "name" in rule.keys():
+                rule_name = rule['name']
+                print_debug("Processing Aquinas rule '{}'".format(rule_name))
+            for k in ["filter_string", "actions"]:
+                if k not in rule.keys():
+                    print_error("No '{}' defined for Aquinas rule '{}'".format(k, rule_name), fatal=True)
+            print_debug("Filter String: {}".format(rule['filter_string']))
+            try:
+                matched_sids = self.filter_ruleset(rule['filter_string'])
+            except Exception as e:
+                print_error("Unable to apply filter string '{}' in Aquinas rule named '{}'.".format(rule['filter_string'], rule_name), fatal=True)
+            print_debug("matched_sids: {}\npassed sids: {}".format(matched_sids, sids))
+            matched_sids = list(set(sids) & set(matched_sids))
+            print_debug("Matched sids: {}".format(matched_sids))
+            for sid in matched_sids:
+                for action in rule['actions']:
+                    if type(action) == str:
+                        if action not in valid_actions_str:
+                            print_error("Invalid action '{}' in Aquinas rule named '{}'. Supported str actions are: {}.".format(action, rule_name, valid_actions_str))
+                            continue
+                        if action != 'disable':
+                            print_error("Action not implemented: '{}'.".format(action))
+                            continue
+                        self.metadata_dict[sid]['disabled'] = True
+                    elif type(action) == dict:
+                        for action_key in action.keys():
+                            action_key = action_key.strip()
+                            if action_key not in valid_actions_dict:
+                                print_error("Invalid action found: '{}' in Aquinas rule named '{}'. Supported dict actions are: '{}'.".format(action, rule_name, valid_actions_dict))
+                                continue
+                            if len(str(action[action_key]).strip()) == 0:
+                                print_error("No value for action '{}'.".format(action_key), fatal=True)
+                            if action_key == "delete_metadata":
+                                a = [k.strip().lower() for k in action[action_key].split(' ', 1)]
+                                if len(a) < 2:
+                                    key = a[0]
+                                    print_debug("Deleting all metadata for key '{}'.".format(key))
+                                    self.delete_metadata(sid, key)
+                                else:
+                                    key = a[0]
+                                    value = a[1]
+                                    print_debug("Deleting all metadata with key-value pair '{} {}'.".format(key, value))
+                                    self.delete_metadata(sid, key, value)
+                            elif action_key.startswith("add_metadata"):
+                                a = [k.strip().lower() for k in action[action_key].split(' ', 1)]
+                                if len(a) != 2:
+                                    print_error("Invalid value for action '{}' in Aquinas rule '{}'.".format(action_key, rule_name))
+                                else:
+                                    key = a[0]
+                                    value = a[1]
+                                    if action_key.endswith("exclusive"):
+                                        self.delete_metadata(sid, key)
+                                    self.add_metadata(sid, key, value)
+                            elif action_key == "set_priority":
+                                priority = str(action[action_key]).strip()
+                                if priority_keyword_re.search(self.metadata_dict[sid]['raw_rule']):
+                                    self.metadata_dict[sid]['raw_rule'] = priority_keyword_re.sub(r'\g<PRE>' + priority + ';', self.metadata_dict[sid]['raw_rule'])
+                                else:
+                                    # no 'priority' keyword in original rule; add one.
+                                    priority_string = " priority:{};)".format(priority)
+                                    self.metadata_dict[sid]['raw_rule'] = eol_re.sub(priority_string, self.metadata_dict[sid]['raw_rule'])
+                            elif action_key == "regex_sub":
+                                v = action[action_key]
+                                insensitive = False
+                                re_flag = 0
+                                re_v = v
+                                if v.endswith('i'):
+                                    insensitive = True
+                                    re_flag = re.I
+                                    re_v = v[:-1]
+                                try:
+                                    search_string,replace_string = re_v.strip().strip('/').split('/')
+                                    pattern_re = re.compile(r"{}".format(search_string), flags=re_flag)
+                                    self.metadata_dict[sid]['raw_rule'] = pattern_re.sub(r'{}'.format(replace_string), self.metadata_dict[sid]['raw_rule'])
+                                except Exception as e:
+                                    print_error("Problem processing '{}' value '{}' in Aquinas rule named '{}': {}".format(action_key, v, rule_name, e))
+                                    continue
+
+                            else:
+                                #not reached
+                                print_error("Invalid action found: '{}' in Aquinas rule named '{}'. Supported dict actions are: '{}'.".format(action, rule_name, valid_actions_dict), fatal=True)
+                            print_debug("Handled '{}' Action: '{}'. Value: '{}'".format(action_key, action, action[action_key]))
+                    else:
+                        print_error("Invalid action data type '{}' in Aquinas rule named '{}'.".format(type(action), rule_name))
+                        continue
+
+#        for arule in self.aquinas_rules:
+        return sids
+
     def print_header(self):
         """Prints vanity header and global stats."""
         total = len(self.metadata_dict)
@@ -1024,6 +1196,7 @@ class Ruleset():
             # Note: this updates/overwrites the self.metadata_dict[<sid>]['raw_rule'] value
             # so if your code expects that to be unchanged after calling output_rules(),
             # that won't be the case.
+            print_debug("Modifying metadata...")
             for s in sid_list:
                 metadata_string = ""
                 # Sort before building; this way the ruleset hash won't change on every run.
@@ -1034,21 +1207,30 @@ class Ruleset():
                         metadata_string += "{} {}, ".format(key, val)
                 if len(metadata_string) > 0:
                     metadata_string = metadata_string[:-2] + ';'
-                    self.metadata_dict[s]['raw_rule'] = metadata_keyword_re.sub(r'\g<PRE>' + metadata_string, self.metadata_dict[s]['raw_rule'])
+                    if metadata_keyword_re.search(self.metadata_dict[s]['raw_rule']):
+                        self.metadata_dict[s]['raw_rule'] = metadata_keyword_re.sub(r'\g<PRE>' + metadata_string, self.metadata_dict[s]['raw_rule'])
+                    else:
+                        # no 'metadata' keyword in original rule; add one.
+                        metadata_string = " metadata:{})".format(metadata_string)
+                        self.metadata_dict[s]['raw_rule'] = eol_re.sub(metadata_string, self.metadata_dict[s]['raw_rule'])
                 else:
                     # this shouldn't happen b/c sid gets added
                     print_warning("No metadata found for SID {}.".format(s))
         if outfile is None:
             for s in sid_list:
-                print("{}".format(self.metadata_dict[s]['raw_rule']))
+                if not self.metadata_dict[s]['disabled']:
+                    print("{}".format(self.metadata_dict[s]['raw_rule']))
         else:
             try:
                 with open(outfile, "w") as fh:
+                    count = 0
                     for s in sid_list:
-                        fh.write("{}\n".format(self.metadata_dict[s]['raw_rule']))
+                        if not self.metadata_dict[s]['disabled']:
+                            fh.write("{}\n".format(self.metadata_dict[s]['raw_rule']))
+                            count += 1
             except Exception as e:
                 print_error("Problem writing to file '{}':\n{}".format(outfile, e), fatal=True)
-            print(GREEN + "Wrote {} rules to file, '{}'".format(len(sid_list), outfile) + RESET + "\n")
+            print(GREEN + "Wrote {} rules to file, '{}'".format(count, outfile) + RESET + "\n")
 
 
 def get_parser():
@@ -1137,6 +1319,12 @@ AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 801814
                             required=False,
                             default=False,
                             help="modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.")
+        parser.add_argument("-a", "--aquinas", "--aquinas-file",
+                            action="store",
+                            dest="aquinas_file",
+                            required=False,
+                            default=None,
+                            help="YAML file of directives to apply actions on post-filtered rules based on filter strings.")
         parser.add_argument("-q", "--quiet", "--suppress_warnings",
                             action="store_true",
                             dest="suppress_warnings",
@@ -1209,11 +1397,16 @@ def main():
                  ignore_filename=args.ignore_filename,
                  normalize=args.normalize,
                  enhance=args.enhance,
-                 modify_metadata=args.modify_metadata)
+                 modify_metadata=args.modify_metadata,
+                 aquinas_file=args.aquinas_file)
 
     filtered_sids = rs.filter_ruleset()
 
     print_debug("filtered_sids: {}".format(filtered_sids))
+
+    if rs.aquinas_file:
+        filtered_sids = rs._aquinas_apply(filtered_sids)
+
 
     if args.outfile == "<stdout>":
         if args.summary_ruleset:
