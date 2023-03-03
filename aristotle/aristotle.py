@@ -159,11 +159,11 @@ class Ruleset():
     :type enhance: bool, optional
     :param modify_metadata: modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.
     :type modify_metadata: bool, optional
-    :param aquinas_file: A filename of a YAML file of directives to apply actions on post-filtered rules based on filter strings.
-    :type aquinas_file: string, optional
+    :param pfmod_file: A filename of a YAML file of directives to apply actions on post-filtered rules based on filter strings.
+    :type pfmod_file: string, optional
     :raises: `AristotleException`
     """
-    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, enhance=False, modify_metadata=False, aquinas_file=None):
+    def __init__(self, rules, metadata_filter=None, include_disabled_rules=False, summary_max=16, ignore_classtype_keyword=False, ignore_filename=False, normalize=False, enhance=False, modify_metadata=False, pfmod_file=None):
         """Constructor."""
         # dict keys are sids
         self.metadata_dict = {}
@@ -178,9 +178,9 @@ class Ruleset():
         self.normalize = normalize
         self.enhance = enhance
         self.modify_metadata = modify_metadata
-        self.aquinas_file = aquinas_file
-        if aquinas_file and not modify_metadata:
-            print_warning("'aquinas_file' specified but 'modify_metadata' not enabled.  Enabling 'modify_metadata'....")
+        self.pfmod_file = pfmod_file
+        if pfmod_file and not modify_metadata:
+            print_warning("'pfmod_file' specified but 'modify_metadata' not enabled.  Enabling 'modify_metadata'....")
             self.modify_metadata = True
         if not metadata_filter:
             self.metadata_filter = None
@@ -193,14 +193,14 @@ class Ruleset():
         except Exception as e:
             print_error("Unable to process 'summary_max' value '{}' passed to Ruleset constructor:\n{}".format(summary_max, e))
 
-        if self.aquinas_file:
+        if self.pfmod_file:
             try:
-                if not os.path.isfile(self.aquinas_file):
-                    print_error("'{}': file not found.".format(self.aquinas_file), fatal=True)
-                with open(self.aquinas_file, 'r') as fh:
-                    self.aquinas_rules = yaml.safe_load(fh)
+                if not os.path.isfile(self.pfmod_file):
+                    print_error("'{}': file not found.".format(self.pfmod_file), fatal=True)
+                with open(self.pfmod_file, 'r') as fh:
+                    self.pfmod_rules = yaml.safe_load(fh)
             except Exception as e:
-                print_error("Unable to open YAML file '{}': {}".format(self.aquinas_file, e), fatal=True)
+                print_error("Unable to open YAML file '{}': {}".format(self.pfmod_file, e), fatal=True)
             # YAML loaded, will process later and validate then
         # deal with rules file(s)
         try:
@@ -975,8 +975,8 @@ class Ruleset():
         except Exception as e:
             print_error("Problem processing metadata_filter string:\n\n{}\n\nError:\n{}".format(metadata_filter_original, e), fatal=True)
 
-    def _aquinas_apply(self, sids):
-        """ Applies the directives in the aquinas YAML file to passed in SIDs
+    def _pfmod_apply(self, sids):
+        """ Applies the directives in the pfmod YAML file to passed in SIDs
 
         :param sids: list of sids to scope to
         :type sids: list, required
@@ -995,33 +995,35 @@ class Ruleset():
                               "regex_sub"
                              ]
         valid_actions = valid_actions_str + valid_actions_dict
+        matched_sids_all = set()
 
-        print_debug("aquinas_apply() called")
-        if "rules" not in self.aquinas_rules.keys():
-            print_error("No 'rules' directives defined in file '{}'.".format(self.aquinas_file), fatal=True)
-        if "version" in self.aquinas_rules.keys():
-            print_debug("Processing Aquinas rules, version {}.".format(self.aquinas_rules['version']))
-        for rule in self.aquinas_rules['rules']:
+        print_debug("pfmod_apply() called")
+        if "rules" not in self.pfmod_rules.keys():
+            print_error("No 'rules' directives defined in file '{}'.".format(self.pfmod_file), fatal=True)
+        if "version" in self.pfmod_rules.keys():
+            print_debug("Processing PFMod rules, version {}.".format(self.pfmod_rules['version']))
+        for rule in self.pfmod_rules['rules']:
             rule_name = "<undefined>"
             if "name" in rule.keys():
                 rule_name = rule['name']
-                print_debug("Processing Aquinas rule '{}'".format(rule_name))
+                print_debug("Processing PFMod rule '{}'".format(rule_name))
             for k in ["filter_string", "actions"]:
                 if k not in rule.keys():
-                    print_error("No '{}' defined for Aquinas rule '{}'".format(k, rule_name), fatal=True)
+                    print_error("No '{}' defined for PFMod rule '{}'".format(k, rule_name), fatal=True)
             print_debug("Filter String: {}".format(rule['filter_string']))
             try:
                 matched_sids = self.filter_ruleset(rule['filter_string'])
             except Exception as e:
-                print_error("Unable to apply filter string '{}' in Aquinas rule named '{}'.".format(rule['filter_string'], rule_name), fatal=True)
+                print_error("Unable to apply filter string '{}' in PFMod rule named '{}'.".format(rule['filter_string'], rule_name), fatal=True)
             print_debug("matched_sids: {}\npassed sids: {}".format(matched_sids, sids))
             matched_sids = list(set(sids) & set(matched_sids))
+            matched_sids_all.update(matched_sids)
             print_debug("Matched sids: {}".format(matched_sids))
             for sid in matched_sids:
                 for action in rule['actions']:
                     if type(action) == str:
                         if action not in valid_actions_str:
-                            print_error("Invalid action '{}' in Aquinas rule named '{}'. Supported str actions are: {}.".format(action, rule_name, valid_actions_str))
+                            print_error("Invalid action '{}' in PFMod rule named '{}'. Supported str actions are: {}.".format(action, rule_name, valid_actions_str))
                             continue
                         if action != 'disable':
                             print_error("Action not implemented: '{}'.".format(action))
@@ -1031,7 +1033,7 @@ class Ruleset():
                         for action_key in action.keys():
                             action_key = action_key.strip()
                             if action_key not in valid_actions_dict:
-                                print_error("Invalid action found: '{}' in Aquinas rule named '{}'. Supported dict actions are: '{}'.".format(action, rule_name, valid_actions_dict))
+                                print_error("Invalid action found: '{}' in PFMod rule named '{}'. Supported dict actions are: '{}'.".format(action, rule_name, valid_actions_dict))
                                 continue
                             if len(str(action[action_key]).strip()) == 0:
                                 print_error("No value for action '{}'.".format(action_key), fatal=True)
@@ -1049,7 +1051,7 @@ class Ruleset():
                             elif action_key.startswith("add_metadata"):
                                 a = [k.strip().lower() for k in action[action_key].split(' ', 1)]
                                 if len(a) != 2:
-                                    print_error("Invalid value for action '{}' in Aquinas rule '{}'.".format(action_key, rule_name))
+                                    print_error("Invalid value for action '{}' in PFMod rule '{}'.".format(action_key, rule_name))
                                 else:
                                     key = a[0]
                                     value = a[1]
@@ -1057,6 +1059,7 @@ class Ruleset():
                                         self.delete_metadata(sid, key)
                                     self.add_metadata(sid, key, value)
                             elif action_key == "set_priority":
+                                print_debug("Setting priority on SID {}".format(sid))
                                 priority = str(action[action_key]).strip()
                                 if priority_keyword_re.search(self.metadata_dict[sid]['raw_rule']):
                                     self.metadata_dict[sid]['raw_rule'] = priority_keyword_re.sub(r'\g<PRE>' + priority + ';', self.metadata_dict[sid]['raw_rule'])
@@ -1078,19 +1081,17 @@ class Ruleset():
                                     pattern_re = re.compile(r"{}".format(search_string), flags=re_flag)
                                     self.metadata_dict[sid]['raw_rule'] = pattern_re.sub(r'{}'.format(replace_string), self.metadata_dict[sid]['raw_rule'])
                                 except Exception as e:
-                                    print_error("Problem processing '{}' value '{}' in Aquinas rule named '{}': {}".format(action_key, v, rule_name, e))
+                                    print_error("Problem processing '{}' value '{}' in PFMod rule named '{}': {}".format(action_key, v, rule_name, e))
                                     continue
 
                             else:
                                 #not reached
-                                print_error("Invalid action found: '{}' in Aquinas rule named '{}'. Supported dict actions are: '{}'.".format(action, rule_name, valid_actions_dict), fatal=True)
+                                print_error("Invalid action found: '{}' in PFMod rule named '{}'. Supported dict actions are: '{}'.".format(action, rule_name, valid_actions_dict), fatal=True)
                             print_debug("Handled '{}' Action: '{}'. Value: '{}'".format(action_key, action, action[action_key]))
                     else:
-                        print_error("Invalid action data type '{}' in Aquinas rule named '{}'.".format(type(action), rule_name))
+                        print_error("Invalid action data type '{}' in PFMod rule named '{}'.".format(type(action), rule_name))
                         continue
-
-#        for arule in self.aquinas_rules:
-        return sids
+        return matched_sids_all
 
     def print_header(self):
         """Prints vanity header and global stats."""
@@ -1151,11 +1152,13 @@ class Ruleset():
             stats_str = stats_str[:-1]
         print("{}".format(stats_str))
 
-    def print_ruleset_summary(self, sids):
+    def print_ruleset_summary(self, sids, pfmod_sids=None):
         """Prints summary/truncated filtered ruleset to stdout.
 
         :param sids: list of SIDs.
         :type sids: list, required
+        :param sids: list of SID modified by PFMod.
+        :type sids: list, optional
         :raises: `AristotleException`
         """
         print_debug("print_ruleset_summary() called")
@@ -1172,7 +1175,12 @@ class Ruleset():
             else:
                 break
             i += 1
-        print("\n" + BLUE + "Showing {} of {} rules".format(i, len(sids)) + RESET + "\n")
+        print("\n" + BLUE + "Showing {} of {} rules".format(i, len(sids)) + RESET)
+        if pfmod_sids is not None:
+            pfmod_ratio = float(float(len(pfmod_sids)) / float(len(sids)))
+            print(BLUE + "SIDs modifed by PFMod: {} of {} ({:.1%})".format(len(pfmod_sids), len(sids), pfmod_ratio) + RESET)
+            print_debug("SIDs NOT modified by PFMod: {}".format(list(set(sids) - set(pfmod_sids))))
+        print("")
 
     def output_rules(self, sid_list, outfile=None, modify_metadata=None):
         """Output rules, given a list of SIDs.
@@ -1319,9 +1327,9 @@ AND NOT ("protocols smtp" OR "protocols pop" OR "protocols imap") OR "sid 801814
                             required=False,
                             default=False,
                             help="modify the rule metadata keyword value on output to contain the internally tracked and normalized metadata data.")
-        parser.add_argument("-a", "--aquinas", "--aquinas-file",
+        parser.add_argument("-a", "--pfmod", "--pfmod-file",
                             action="store",
-                            dest="aquinas_file",
+                            dest="pfmod_file",
                             required=False,
                             default=None,
                             help="YAML file of directives to apply actions on post-filtered rules based on filter strings.")
@@ -1398,24 +1406,25 @@ def main():
                  normalize=args.normalize,
                  enhance=args.enhance,
                  modify_metadata=args.modify_metadata,
-                 aquinas_file=args.aquinas_file)
+                 pfmod_file=args.pfmod_file)
 
     filtered_sids = rs.filter_ruleset()
 
     print_debug("filtered_sids: {}".format(filtered_sids))
 
-    if rs.aquinas_file:
-        filtered_sids = rs._aquinas_apply(filtered_sids)
-
+    pfmod_sids = None
+    if rs.pfmod_file:
+        pfmod_sids = rs._pfmod_apply(filtered_sids)
+        print_debug("pfmod_sids: {}".format(pfmod_sids))
 
     if args.outfile == "<stdout>":
         if args.summary_ruleset:
-            rs.print_ruleset_summary(filtered_sids)
+            rs.print_ruleset_summary(filtered_sids, pfmod_sids)
         else:
             rs.output_rules(sid_list=filtered_sids, outfile=None, modify_metadata=args.modify_metadata)
     else:
         if args.summary_ruleset:
-            rs.print_ruleset_summary(filtered_sids)
+            rs.print_ruleset_summary(filtered_sids, pfmod_sids)
         rs.output_rules(sid_list=filtered_sids, outfile=args.outfile, modify_metadata=args.modify_metadata)
 
 if __name__== "__main__":
