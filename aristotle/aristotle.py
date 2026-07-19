@@ -891,21 +891,24 @@ class Ruleset():
                 try:
                     lbound = float('-inf')
                     ubound = float('inf')
+                    lbound_inclusive = False
+                    ubound_inclusive = False
                     offset = 1
                     if v.startswith('<'):
                         if v[offset] == '=':
                             offset += 1
+                            ubound_inclusive = True
                         ubound = float(v[offset:].strip())
-                        ubound += (float(offset) - 1.0)
                     else:  # v.startswith('>'):
                         if v[offset] == '=':
                             offset += 1
+                            lbound_inclusive = True
                         lbound = float(v[offset:].strip())
-                        lbound -= (float(offset) - 1.0)
                     print_debug("lbound: {}\nubound: {}".format(lbound, ubound))
                     retarray = [s for s in [s2 for s2 in self.metadata_dict.keys() if k in self.metadata_dict[s2]["metadata"].keys()]
                                 for val in self.metadata_dict[s]["metadata"][k]
-                                if (float(val) < float(ubound) and float(val) > float(lbound))]
+                                if (float(val) < ubound or (ubound_inclusive and float(val) == ubound))
+                                and (float(val) > lbound or (lbound_inclusive and float(val) == lbound))]
                 except Exception as e:
                     print_error("Unable to process '{}' value '{}' (as float):\n{}".format(k, v, e), fatal=True)
         elif k in ["msg_regex", "rule_regex"]:
@@ -1003,7 +1006,7 @@ class Ruleset():
                 tstrip = ' '.join(tsplit)
             else:
                 # if just key provided (no value), match on all values
-                tstrip = "{} <all>".format(tstrip)
+                tstrip = "{} <all>".format(tsplit[0])
             print_debug(tstrip)
             # if token begins with digit, the tokenizer doesn't like it
             hashstr = "D" + hashlib.md5(tstrip.encode()).hexdigest()
