@@ -222,7 +222,7 @@ class Ruleset():
                 self._enhance_metadata()
             print_debug("Total cache size: {}".format(len(ipval_cache.keys())))
         except Exception as e:
-            traceback.print_exc(e)
+            traceback.print_exc()
             print_error("Unable to process rules '{}':\n{}".format(rules, e), fatal=True)
 
     def set_metadata_filter(self, metadata_filter):
@@ -743,7 +743,7 @@ class Ruleset():
                 self.add_metadata(sid, 'originally_disabled', str(self.metadata_dict[sid]['originally_disabled']))
 
         except Exception as e:
-            traceback.print_exc(e)
+            traceback.print_exc()
             print_error("Problem loading rules: {}".format(e), fatal=True)
 
     def cve_compare(self, left_val, right_val, cmp_operator):
@@ -913,11 +913,11 @@ class Ruleset():
                     print_error("Unable to process '{}' value '{}' (as float):\n{}".format(k, v, e), fatal=True)
         elif k in ["msg_regex", "rule_regex"]:
             # apply regex pattern to rule msg field
-            if not (v.startswith('/') or v.endswith('.') or v.endswith("/i")):
+            if not (v.startswith('/') and (v.endswith('/') or v.endswith('/i'))):
                 print_error("Bad {} pattern '{}' in filter string. Pattern must start with '/' and end with '/' or '/i'.".format(k, v), fatal=True)
             re_flag = 0
             re_v = v
-            if v.endswith('i'):
+            if v.endswith('/i'):
                 re_flag = re.I
                 re_v = v[:-1]
             re_v = re_v.strip('/')
